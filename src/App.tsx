@@ -139,7 +139,13 @@ export default function App() {
     try {
       await createUserWithEmailAndPassword(auth, email, password);
     } catch (err: any) {
-      setError(err.message || "Failed to sign up.");
+      if (err.message?.includes('auth/operation-not-allowed') || err.code === 'auth/operation-not-allowed') {
+        setError("Email/Password sign-in is not enabled in your Firebase Console. Please enable it in Authentication > Sign-in method.");
+      } else if (err.message?.includes('auth/email-already-in-use') || err.code === 'auth/email-already-in-use') {
+        setError("An account already exists with this email. Please sign in instead.");
+      } else {
+        setError(err.message || "Failed to sign up.");
+      }
     } finally {
       setLoading(false);
     }
@@ -152,7 +158,13 @@ export default function App() {
     try {
       await signInWithEmailAndPassword(auth, email, password);
     } catch (err: any) {
-      setError(err.message || "Failed to sign in.");
+      if (err.message?.includes('auth/operation-not-allowed') || err.code === 'auth/operation-not-allowed') {
+        setError("Email/Password sign-in is not enabled in your Firebase Console. Please enable it in Authentication > Sign-in method.");
+      } else if (err.message?.includes('auth/invalid-credential') || err.code === 'auth/invalid-credential') {
+        setError("Invalid email or password.");
+      } else {
+        setError(err.message || "Failed to sign in.");
+      }
     } finally {
       setLoading(false);
     }

@@ -108,6 +108,12 @@ export default function App() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reportedItems, setReportedItems] = useState<Set<string>>(new Set());
+  const [adminSearchCodename, setAdminSearchCodename] = useState("");
+  const [adminSearchResult, setAdminSearchResult] = useState<UserProfile & { uid: string } | null>(null);
+  const [adminSearchLoading, setAdminSearchLoading] = useState(false);
+  const [allUsersList, setAllUsersList] = useState<(UserProfile & { uid: string })[]>([]);
+  const [staffList, setStaffList] = useState<(UserProfile & { uid: string })[]>([]);
+  const [adminListsLoading, setAdminListsLoading] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -135,18 +141,31 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
-    const unsub = onSnapshot(doc(db, "users", user.uid), (docSnap) => {
+    const unsubUser = onSnapshot(doc(db, "users", user.uid), (docSnap) => {
       if (docSnap.exists() && docSnap.data().codename) {
-        setUserProfile(docSnap.data() as UserProfile);
-        setView(prev => (prev === "landing" || prev === "onboarding" || prev === "signin" || prev === "signup") ? "dashboard" : prev);
+        const data = docSnap.data() as UserProfile;
+        
+        // Also check staff role by email
+        if (user.email) {
+          onSnapshot(doc(db, "staff", user.email), (staffSnap) => {
+            const staffRole = staffSnap.exists() ? staffSnap.data().role : 'user';
+            setUserProfile({ ...data, role: staffRole });
+            setView(prev => (prev === "landing" || prev === "onboarding" || prev === "signin" || prev === "signup") ? "dashboard" : prev);
+            setIsAuthReady(true);
+          });
+        } else {
+          setUserProfile(data);
+          setView(prev => (prev === "landing" || prev === "onboarding" || prev === "signin" || prev === "signup") ? "dashboard" : prev);
+          setIsAuthReady(true);
+        }
       } else {
         setView("onboarding");
+        setIsAuthReady(true);
       }
-      setIsAuthReady(true);
     }, (err) => {
       handleFirestoreError(err, OperationType.GET, "users");
     });
-    return () => unsub();
+    return () => unsubUser();
   }, [user]);
 
   // Listen for user's rooms
@@ -556,6 +575,101 @@ export default function App() {
     }
   };
 
+  const handleAdminSearch = async () => {
+    if (!adminSearchCodename.trim()) return;
+    setAdminSearchLoading(true);
+    try {
+      const q = query(collection(db, "users"), where("codename", "==", adminSearchCodename.trim()), limit(1));
+      const snapshot = await getDocs(q);
+      if (!snapshot.empty) {
+        const userData = snapshot.docs[0].data();
+        const userEmail = userData.email;
+        
+        // Fetch role from staff collection
+        let staffRole = 'user';
+        if (userEmail) {
+          const staffSnap = await getDoc(doc(db, "staff", userEmail));
+          if (staffSnap.exists()) staffRole = staffSnap.data().role;
+        }
+        
+        setAdminSearchResult({ 
+          uid: snapshot.docs[0].id, 
+          ...userData, 
+          role: staffRole 
+        } as UserProfile & { uid: string });
+      } else {
+        setAdminSearchResult(null);
+        setError("User not found.");
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, "users");
+    } finally {
+      setAdminSearchLoading(false);
+    }
+  };
+
+  const fetchAdminLists = async () => {
+    if (!user || userProfile?.role !== 'dev') return;
+    setAdminListsLoading(true);
+    try {
+      // Fetch staff from the staff collection
+      const staffSnap = await getDocs(collection(db, "staff"));
+      const staff = staffSnap.docs.map(doc => ({ email: doc.id, role: doc.data().role }));
+      
+      // Fetch all users to match codenames (limited to 50)
+      const allQ = query(collection(db, "users"), limit(50));
+      const allSnap = await getDocs(allQ);
+      const allUsers = allSnap.docs.map(doc => ({ uid: doc.id, ...doc.data() } as UserProfile & { uid: string }));
+      
+      setAllUsersList(allUsers);
+      
+      // Match staff emails to user profiles
+      const matchedStaff = staff.map(s => {
+        const profile = allUsers.find(u => u.email === s.email);
+        return {
+          uid: profile?.uid || s.email,
+          codename: profile?.codename || "Unknown User",
+          email: s.email,
+          role: s.role as 'dev' | 'moderator' | 'user'
+        };
+      });
+      
+      setStaffList(matchedStaff as (UserProfile & { uid: string })[]);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, "staff");
+    } finally {
+      setAdminListsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (view === "admin" && !currentRoom && userProfile?.role === 'dev') {
+      fetchAdminLists();
+    }
+  }, [view, currentRoom, userProfile]);
+
+  const handleUpdateUserRole = async (uid: string, newRole: 'dev' | 'moderator' | 'user') => {
+    if (!adminSearchResult?.email) {
+      setError("User email not found. Cannot update role.");
+      return;
+    }
+    try {
+      if (newRole === 'user') {
+        await deleteDoc(doc(db, "staff", adminSearchResult.email));
+      } else {
+        await setDoc(doc(db, "staff", adminSearchResult.email), { role: newRole });
+      }
+      
+      // Refresh
+      fetchAdminLists();
+      if (adminSearchResult) {
+        setAdminSearchResult({ ...adminSearchResult, role: newRole });
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `staff/${adminSearchResult.email}`);
+    }
+  };
+
   const handleMakeAdmin = async (uid: string) => {
     if (!currentRoom || !user) return;
     try {
@@ -730,7 +844,7 @@ export default function App() {
   }
 
   function renderAdmin() {
-    if (!user || (!currentRoom && userProfile?.role !== 'dev' && userProfile?.role !== 'moderator')) {
+    if (!user || (!currentRoom && userProfile?.role !== 'dev' && userProfile?.role !== 'moderator' && user.email !== 'searsokvarkhim1@gmail.com')) {
       setView("dashboard");
       return null;
     }
@@ -755,6 +869,88 @@ export default function App() {
 
         <main className="flex-1 overflow-y-auto px-6 py-8">
           <div className="max-w-3xl mx-auto space-y-8">
+            {userProfile?.role === 'dev' && !currentRoom && (
+              <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6">
+                <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+                  <Shield className="w-5 h-5 text-purple-500" /> Global Staff Management
+                </h3>
+                <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 mb-6">
+                  <p className="text-purple-400 text-sm font-bold mb-2 flex items-center gap-2">
+                    <ShieldAlert className="w-4 h-4" /> Firebase Console Management
+                  </p>
+                  <p className="text-zinc-400 text-xs leading-relaxed">
+                    To add or remove staff, go to your **Firebase Console &gt; Firestore Database**. 
+                    Create a document in the <code className="bg-black px-1 rounded text-purple-300">staff</code> collection.
+                    Set the **Document ID** to the user's email address and add a field <code className="bg-black px-1 rounded text-purple-300">role</code> with value <code className="bg-black px-1 rounded text-purple-300">"dev"</code> or <code className="bg-black px-1 rounded text-purple-300">"moderator"</code>.
+                  </p>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="flex gap-2">
+                    <input 
+                      type="text"
+                      value={adminSearchCodename}
+                      onChange={(e) => setAdminSearchCodename(e.target.value)}
+                      placeholder="Search by codename..."
+                      className="flex-1 bg-black border border-zinc-800 rounded-xl px-4 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-700"
+                    />
+                    <button 
+                      onClick={handleAdminSearch}
+                      disabled={adminSearchLoading}
+                      className="px-4 py-2 bg-white text-black font-bold rounded-xl hover:bg-zinc-200 transition-colors disabled:opacity-50"
+                    >
+                      {adminSearchLoading ? "Searching..." : "Search"}
+                    </button>
+                  </div>
+
+                  {adminSearchResult && (
+                    <div className="bg-black border border-zinc-800 p-4 rounded-xl">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-bold text-lg">{adminSearchResult.codename}</p>
+                          <p className="text-xs text-zinc-500 font-mono">{adminSearchResult.uid}</p>
+                          <p className="text-xs text-zinc-400">{adminSearchResult.email}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-1">Current Role</p>
+                          <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${
+                            adminSearchResult.role === 'dev' ? 'bg-purple-500/20 text-purple-400' :
+                            adminSearchResult.role === 'moderator' ? 'bg-blue-500/20 text-blue-400' :
+                            'bg-zinc-800 text-zinc-500'
+                          }`}>
+                            {adminSearchResult.role || 'user'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-8 space-y-3">
+                  <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Active Staff List</h4>
+                  {adminListsLoading ? (
+                    <p className="text-zinc-500 text-sm animate-pulse">Loading staff list...</p>
+                  ) : staffList.length === 0 ? (
+                    <p className="text-zinc-500 text-sm italic">No staff members found in database.</p>
+                  ) : (
+                    staffList.map(u => (
+                      <div key={u.uid} className="flex items-center justify-between bg-black border border-zinc-800 p-4 rounded-xl">
+                        <div>
+                          <p className="font-bold text-sm">{u.codename}</p>
+                          <p className="text-[10px] text-zinc-500 font-mono">{u.email}</p>
+                        </div>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          u.role === 'dev' ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400'
+                        }`}>
+                          {u.role}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+
             {currentRoom && (currentRoom.memberRoles?.[user.uid] === 'creator' || currentRoom.memberRoles?.[user.uid] === 'admin' || userProfile?.role === 'dev') && (
               <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6">
                 <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
@@ -1245,10 +1441,10 @@ export default function App() {
               <span className="font-bold tracking-tighter text-xl uppercase">Shadows</span>
             </div>
             <div className="flex items-center gap-4">
-              {(userProfile?.role === 'dev' || userProfile?.role === 'moderator') && (
+              {(userProfile?.role === 'dev' || userProfile?.role === 'moderator' || user?.email === 'searsokvarkhim1@gmail.com') && (
                 <button 
                   onClick={() => setView("admin")}
-                  className="hidden md:flex items-center gap-2 px-4 py-2 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-sm font-bold hover:bg-red-500/20 transition-colors"
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-sm font-bold hover:bg-red-500/20 transition-colors"
                 >
                   <ShieldAlert className="w-4 h-4" /> Admin Dashboard
                 </button>

@@ -74,12 +74,17 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
+    function getStaffRole() {
+      return get(/databases/$(database)/documents/staff/$(request.auth.token.email)).data.role;
+    }
+
     function isDev() {
-      return isAuthenticated() && getUserData().role == 'dev';
+      return isAuthenticated() && 
+        (request.auth.token.email == "searsokvarkhim1@gmail.com" || getStaffRole() == 'dev');
     }
 
     function isModerator() {
-      return isAuthenticated() && (getUserData().role == 'moderator' || isDev());
+      return isAuthenticated() && (getStaffRole() == 'moderator' || isDev());
     }
 
     function isRoomAdmin(roomId) {
@@ -146,7 +151,7 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       // Users can only write their own profile, but cannot change their role
       allow create: if isOwner(userId) && (!('role' in request.resource.data) || request.resource.data.role == 'user');
-      allow update: if isOwner(userId) && (!('role' in request.resource.data) || request.resource.data.role == resource.data.role);
+      allow update: if (isOwner(userId) && (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)) || isDev();
     }
 
     // Rules for rooms (Shared Spaces)

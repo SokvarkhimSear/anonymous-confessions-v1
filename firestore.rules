@@ -70,6 +70,23 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isDev() {
+      return isAuthenticated() && getUserData().role == 'dev';
+    }
+
+    function isModerator() {
+      return isAuthenticated() && (getUserData().role == 'moderator' || isDev());
+    }
+
+    function isRoomAdmin(roomId) {
+      let room = get(/databases/$(database)/documents/rooms/$(roomId)).data;
+      return isAuthenticated() && (room.memberRoles[request.auth.uid] == 'admin' || room.memberRoles[request.auth.uid] == 'creator' || isDev());
+    }
+
     function isValidRoom(data) {
       return data.keys().hasAll(['name', 'code', 'createdBy', 'members', 'createdAt']) &&
              data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
@@ -127,8 +144,9 @@ service cloud.firestore {
     match /users/{userId} {
       // Anyone authenticated can read user profiles (needed to check codename uniqueness)
       allow read: if isAuthenticated();
-      // Users can only write their own profile
-      allow write: if isOwner(userId);
+      // Users can only write their own profile, but cannot change their role
+      allow create: if isOwner(userId) && (!('role' in request.resource.data) || request.resource.data.role == 'user');
+      allow update: if isOwner(userId) && (!('role' in request.resource.data) || request.resource.data.role == resource.data.role);
     }
 
     // Rules for rooms (Shared Spaces)
@@ -137,9 +155,15 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       // Users can create rooms
       allow create: if isAuthenticated() && isValidRoom(request.resource.data);
-      // Users can update rooms to join them (add to members array)
-      allow update: if isAuthenticated(); 
-      allow delete: if false;
+      // Users can update rooms to join them (add to members array) or manage roles
+      allow update: if isAuthenticated() && (
+        // Joining
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members']) && request.resource.data.members.hasAll(resource.data.members)) ||
+        // Role management (only creator can promote to admin)
+        (resource.data.memberRoles[request.auth.uid] == 'creator' && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberRoles'])) ||
+        isDev()
+      ); 
+      allow delete: if isDev() || resource.data.createdBy == request.auth.uid;
 
       // Rules for confessions sub-collection
       match /confessions/{confessionId} {
@@ -147,8 +171,8 @@ service cloud.firestore {
         allow read: if isAuthenticated();
         // Users can create confessions
         allow create: if isAuthenticated() && isValidConfession(request.resource.data);
-        allow update: if isAuthenticated() && isValidConfessionUpdate(request.resource.data, resource.data);
-        allow delete: if false; // Confessions are immutable
+        allow update: if isAuthenticated() && (isValidConfessionUpdate(request.resource.data, resource.data) || isRoomAdmin(roomId));
+        allow delete: if isRoomAdmin(roomId);
       }
     }
 
@@ -156,15 +180,18 @@ service cloud.firestore {
     match /forum_posts/{postId} {
       allow read: if isAuthenticated();
       allow create: if isAuthenticated() && isValidForumPost(request.resource.data);
-      allow update: if isAuthenticated() && 
-                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['upvotedBy', 'downvotedBy']) &&
-                    request.resource.data.upvotedBy is list &&
-                    request.resource.data.downvotedBy is list;
-      allow delete: if isOwner(resource.data.authorUid);
+      allow update: if isAuthenticated() && (
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['upvotedBy', 'downvotedBy']) &&
+         request.resource.data.upvotedBy is list &&
+         request.resource.data.downvotedBy is list) ||
+        isModerator()
+      );
+      allow delete: if isOwner(resource.data.authorUid) || isModerator();
 
       match /comments/{commentId} {
         allow read: if isAuthenticated();
         allow create: if isAuthenticated() && isValidForumComment(request.resource.data);
+        allow delete: if isOwner(resource.data.authorUid) || isModerator();
       }
     }
 

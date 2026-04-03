@@ -19,6 +19,7 @@ interface Room {
   name: string;
   code: string;
   createdBy: string;
+  members: string[];
   memberRoles?: Record<string, 'creator' | 'admin' | 'member'>;
   createdAt: any;
 }
@@ -43,6 +44,8 @@ interface ForumComment {
   authorUid: string;
   codename: string;
   userTag: string;
+  replyToTag?: string;
+  replyToCodename?: string;
   attachmentUrl?: string;
   isReported?: boolean;
   createdAt: any;
@@ -67,6 +70,7 @@ interface UserProfile {
   photoURL: string;
   codenameUpdatedAt: any;
   userTag?: string;
+  email?: string;
   role?: 'dev' | 'moderator' | 'user';
 }
 
@@ -91,6 +95,7 @@ export default function App() {
   const [chatAttachment, setChatAttachment] = useState<string | null>(null);
   const [postAttachment, setPostAttachment] = useState<string | null>(null);
   const [replyingTo, setReplyingTo] = useState<Confession | null>(null);
+  const [replyingToComment, setReplyingToComment] = useState<ForumComment | null>(null);
   const [activePost, setActivePost] = useState<ForumPost | null>(null);
   const [comments, setComments] = useState<ForumComment[]>([]);
   const [newComment, setNewComment] = useState("");
@@ -103,9 +108,13 @@ export default function App() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reportedItems, setReportedItems] = useState<Set<string>>(new Set());
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
+  const forumCommentInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const chatAttachmentRef = useRef<HTMLInputElement>(null);
   const postAttachmentRef = useRef<HTMLInputElement>(null);
   const commentAttachmentRef = useRef<HTMLInputElement>(null);
@@ -114,9 +123,11 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       if (!currentUser) {
-        setView("landing");
+        setView(prev => (prev === "signin" || prev === "signup") ? prev : "landing");
         setUserProfile(null);
         setIsAuthReady(true);
+      } else {
+        setIsAuthReady(false);
       }
     });
     return () => unsubscribe();
@@ -127,7 +138,7 @@ export default function App() {
     const unsub = onSnapshot(doc(db, "users", user.uid), (docSnap) => {
       if (docSnap.exists() && docSnap.data().codename) {
         setUserProfile(docSnap.data() as UserProfile);
-        setView(prev => (prev === "landing" || prev === "onboarding") ? "dashboard" : prev);
+        setView(prev => (prev === "landing" || prev === "onboarding" || prev === "signin" || prev === "signup") ? "dashboard" : prev);
       } else {
         setView("onboarding");
       }
@@ -246,7 +257,7 @@ export default function App() {
       } else if (err.code === 'auth/wrong-password') {
         setError("Wrong password. Please try again.");
       } else if (err.message?.includes('auth/invalid-credential') || err.code === 'auth/invalid-credential') {
-        setError("Wrong password, or this email has no affiliated account on the site.");
+        setError("Invalid email or password. Please check your credentials and try again.");
       } else {
         setError(err.message || "Failed to sign in.");
       }
@@ -296,7 +307,8 @@ export default function App() {
         codename: newCodename.trim(),
         photoURL: userProfile?.photoURL || "default-ghost",
         codenameUpdatedAt: serverTimestamp(),
-        userTag: tag
+        userTag: tag,
+        email: user.email || undefined
       }, { merge: true });
       
       setNewCodename("");
@@ -348,8 +360,8 @@ export default function App() {
         },
         createdAt: serverTimestamp()
       });
-      const newRoom = { id: roomRef.id, name: roomNameInput, code, createdBy: user.uid, memberRoles: { [user.uid]: 'creator' as const }, createdAt: new Date() };
-      setCurrentRoom(newRoom);
+      const newRoom = { id: roomRef.id, name: roomNameInput, code, createdBy: user.uid, members: [user.uid], memberRoles: { [user.uid]: 'creator' as const }, createdAt: new Date() };
+      setCurrentRoom(newRoom as Room);
       setView("room");
       setShowCreateModal(false);
       setRoomNameInput("");
@@ -394,6 +406,23 @@ export default function App() {
       handleFirestoreError(err, OperationType.LIST, "rooms");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const scrollToMessage = (messageId: string) => {
+    const element = messageRefs.current.get(messageId);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Add a temporary highlight effect
+      const originalBg = element.style.backgroundColor;
+      element.style.transition = 'all 0.5s ease-in-out';
+      element.style.boxShadow = '0 0 20px 5px rgba(255, 255, 255, 0.3)';
+      element.style.transform = 'scale(1.02)';
+      
+      setTimeout(() => {
+        element.style.boxShadow = '';
+        element.style.transform = '';
+      }, 1000);
     }
   };
 
@@ -587,6 +616,11 @@ export default function App() {
         createdAt: serverTimestamp()
       };
       if (attachment) payload.attachmentUrl = attachment;
+      if (replyingToComment) {
+        payload.replyToTag = replyingToComment.userTag;
+        payload.replyToCodename = replyingToComment.codename;
+        setReplyingToComment(null);
+      }
 
       await addDoc(collection(db, "forum_posts", activePost.id, "comments"), payload);
     } catch (err) {
@@ -633,15 +667,19 @@ export default function App() {
     setView("landing");
   };
 
-  const handleMakeAdmin = async (memberId: string) => {
+  const handleDeleteRoom = async () => {
     if (!currentRoom || !user) return;
+    
+    setLoading(true);
     try {
-      const roomRef = doc(db, 'rooms', currentRoom.id);
-      await updateDoc(roomRef, {
-        [`memberRoles.${memberId}`]: 'admin'
-      });
+      await deleteDoc(doc(db, "rooms", currentRoom.id));
+      setCurrentRoom(null);
+      setView("dashboard");
+      setShowDeleteConfirm(false);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `rooms/${currentRoom.id}`);
+      handleFirestoreError(err, OperationType.DELETE, `rooms/${currentRoom.id}`);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -717,7 +755,7 @@ export default function App() {
 
         <main className="flex-1 overflow-y-auto px-6 py-8">
           <div className="max-w-3xl mx-auto space-y-8">
-            {currentRoom && currentRoom.memberRoles?.[user.uid] === 'creator' && (
+            {currentRoom && (currentRoom.memberRoles?.[user.uid] === 'creator' || currentRoom.memberRoles?.[user.uid] === 'admin' || userProfile?.role === 'dev') && (
               <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6">
                 <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
                   <Users className="w-5 h-5" /> Member Management
@@ -736,7 +774,7 @@ export default function App() {
                           </p>
                         </div>
                       </div>
-                      {memberId !== user.uid && currentRoom.memberRoles?.[memberId] !== 'admin' && (
+                      {currentRoom.memberRoles?.[user.uid] === 'creator' && memberId !== user.uid && currentRoom.memberRoles?.[memberId] !== 'admin' && (
                         <button 
                           onClick={() => handleMakeAdmin(memberId)}
                           className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
@@ -747,6 +785,45 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {currentRoom && (currentRoom.memberRoles?.[user.uid] === 'creator' || userProfile?.role === 'dev') && (
+              <div className="bg-red-500/5 border border-red-500/20 rounded-2xl p-6">
+                <h3 className="text-xl font-bold mb-4 flex items-center gap-2 text-red-500">
+                  <ShieldAlert className="w-5 h-5" /> Danger Zone
+                </h3>
+                <p className="text-zinc-500 text-sm mb-6">
+                  Deleting this circle will permanently remove all confessions, members, and data associated with it. This action is irreversible.
+                </p>
+                
+                {!showDeleteConfirm ? (
+                  <button 
+                    onClick={() => setShowDeleteConfirm(true)}
+                    className="w-full bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 px-6 py-4 rounded-xl font-bold transition-all flex items-center justify-center gap-2"
+                  >
+                    <Trash2 className="w-5 h-5" /> Delete Circle Permanently
+                  </button>
+                ) : (
+                  <div className="space-y-4">
+                    <p className="text-sm font-bold text-red-500 text-center">Are you absolutely sure? This cannot be undone.</p>
+                    <div className="flex gap-3">
+                      <button 
+                        onClick={() => setShowDeleteConfirm(false)}
+                        className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white px-6 py-3 rounded-xl font-bold transition-all"
+                      >
+                        Cancel
+                      </button>
+                      <button 
+                        onClick={handleDeleteRoom}
+                        disabled={loading}
+                        className="flex-1 bg-red-500 hover:bg-red-600 text-white px-6 py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                      >
+                        {loading ? "Deleting..." : "Yes, Delete Everything"}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -832,6 +909,13 @@ export default function App() {
                   >
                     Get Started <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
                   </button>
+                  <button 
+                    onClick={() => setView("signin")}
+                    disabled={loading}
+                    className="bg-zinc-900 text-white border border-zinc-800 px-8 py-4 rounded-full font-bold text-lg hover:bg-zinc-800 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    Sign In
+                  </button>
                 </div>
               </motion.div>
             </div>
@@ -868,6 +952,12 @@ export default function App() {
           className="w-full max-w-md space-y-8 bg-zinc-900/50 p-8 rounded-2xl border border-zinc-800 backdrop-blur-xl"
         >
           <div className="text-center">
+            <button 
+              onClick={() => setView("landing")}
+              className="inline-flex items-center gap-2 text-zinc-500 hover:text-white text-sm mb-6 transition-colors"
+            >
+              <ArrowRight className="w-4 h-4 rotate-180" /> Back to home
+            </button>
             <Ghost className="w-12 h-12 mx-auto text-zinc-400 mb-4" />
             <h2 className="text-3xl font-bold tracking-tight">Welcome back</h2>
             <p className="text-zinc-500 mt-2">Sign in to continue to Shadows.</p>
@@ -939,6 +1029,12 @@ export default function App() {
           className="w-full max-w-md space-y-8 bg-zinc-900/50 p-8 rounded-2xl border border-zinc-800 backdrop-blur-xl"
         >
           <div className="text-center">
+            <button 
+              onClick={() => setView("landing")}
+              className="inline-flex items-center gap-2 text-zinc-500 hover:text-white text-sm mb-6 transition-colors"
+            >
+              <ArrowRight className="w-4 h-4 rotate-180" /> Back to home
+            </button>
             <Ghost className="w-12 h-12 mx-auto text-zinc-400 mb-4" />
             <h2 className="text-3xl font-bold tracking-tight">Create an account</h2>
             <p className="text-zinc-500 mt-2">Join Shadows to start sharing.</p>
@@ -1396,14 +1492,16 @@ export default function App() {
           <div className="max-w-3xl mx-auto space-y-8">
             {/* Original Post */}
             <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 flex gap-4">
-              <div className="flex flex-col items-center gap-2">
+              <div className="flex flex-col items-center gap-0.5">
                 <button 
                   onClick={() => handleVote(activePost.id, 'up')} 
                   className={`p-1 rounded hover:bg-zinc-800 transition-colors ${activePost.upvotedBy.includes(user?.uid || '') ? 'text-green-500' : 'text-zinc-500'}`}
                 >
                   <ChevronLeft className="w-6 h-6 rotate-90" />
                 </button>
-                <span className="font-bold text-sm">{activePost.upvotedBy.length - activePost.downvotedBy.length}</span>
+                <span className="text-[10px] font-bold text-green-500/70">{activePost.upvotedBy.length}</span>
+                <div className="h-px w-3 bg-zinc-800 my-0.5" />
+                <span className="text-[10px] font-bold text-red-500/70">{activePost.downvotedBy.length}</span>
                 <button 
                   onClick={() => handleVote(activePost.id, 'down')} 
                   className={`p-1 rounded hover:bg-zinc-800 transition-colors ${activePost.downvotedBy.includes(user?.uid || '') ? 'text-red-500' : 'text-zinc-500'}`}
@@ -1472,9 +1570,31 @@ export default function App() {
                       {comment.codename} <span className="font-mono text-zinc-700">{comment.userTag}</span>
                     </span>
                     <span className="text-[10px] text-zinc-700">• {comment.createdAt?.toDate().toLocaleDateString()}</span>
+                    {comment.replyToTag && (
+                      <span className="text-[10px] text-zinc-500 italic">
+                        replied to <span className="font-mono text-zinc-400">{comment.replyToTag}</span>
+                      </span>
+                    )}
                   </div>
+                  {comment.replyToTag && (
+                    <div className="mb-2 text-xs text-zinc-500 bg-zinc-900/30 p-2 rounded-lg border-l-2 border-zinc-800">
+                      <span className="font-bold text-zinc-400">{comment.userTag}</span> replied to <span className="font-bold text-zinc-400">{comment.replyToTag}</span>
+                    </div>
+                  )}
                   {comment.content && <p className="text-sm text-zinc-300 whitespace-pre-wrap mb-2">{comment.content}</p>}
                   {comment.attachmentUrl && renderAttachment(comment.attachmentUrl)}
+                  <div className="mt-2">
+                    <button 
+                      onClick={() => {
+                        setReplyingToComment(comment);
+                        setNewComment(`@${comment.codename} `);
+                        forumCommentInputRef.current?.focus();
+                      }}
+                      className="text-[10px] font-bold text-zinc-500 hover:text-white transition-colors flex items-center gap-1"
+                    >
+                      <MessageSquare className="w-3 h-3" /> Reply
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1484,6 +1604,19 @@ export default function App() {
         {/* Comment Input */}
         <div className="border-t border-zinc-900 bg-black/80 backdrop-blur-xl p-6">
           <div className="max-w-3xl mx-auto">
+            {replyingToComment && (
+              <div className="mb-3 flex items-center justify-between bg-zinc-900/50 px-4 py-2 rounded-xl border border-zinc-800">
+                <div className="text-xs text-zinc-400">
+                  Replying to <span className="font-bold text-zinc-200">{replyingToComment.codename}</span> <span className="font-mono text-zinc-500">{replyingToComment.userTag}</span>
+                </div>
+                <button 
+                  onClick={() => setReplyingToComment(null)}
+                  className="text-zinc-500 hover:text-white transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
             {commentAttachment && (
               <div className="mb-4 relative inline-block">
                 {commentAttachment.startsWith('data:image/') ? (
@@ -1517,6 +1650,7 @@ export default function App() {
               </button>
               <div className="relative flex-1">
                 <textarea 
+                  ref={forumCommentInputRef}
                   value={newComment}
                   onChange={(e) => setNewComment(e.target.value)}
                   placeholder="Add a comment..."
@@ -1579,14 +1713,16 @@ export default function App() {
             ) : (
               forumPosts.map(post => (
                 <div key={post.id} className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 flex gap-4 hover:border-zinc-700 transition-colors cursor-pointer" onClick={() => setActivePost(post)}>
-                  <div className="flex flex-col items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex flex-col items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
                     <button 
                       onClick={() => handleVote(post.id, 'up')} 
                       className={`p-1 rounded hover:bg-zinc-800 transition-colors ${post.upvotedBy.includes(user?.uid || '') ? 'text-green-500' : 'text-zinc-500'}`}
                     >
                       <ChevronLeft className="w-6 h-6 rotate-90" />
                     </button>
-                    <span className="font-bold text-sm">{post.upvotedBy.length - post.downvotedBy.length}</span>
+                    <span className="text-[10px] font-bold text-green-500/70">{post.upvotedBy.length}</span>
+                    <div className="h-px w-3 bg-zinc-800 my-0.5" />
+                    <span className="text-[10px] font-bold text-red-500/70">{post.downvotedBy.length}</span>
                     <button 
                       onClick={() => handleVote(post.id, 'down')} 
                       className={`p-1 rounded hover:bg-zinc-800 transition-colors ${post.downvotedBy.includes(user?.uid || '') ? 'text-red-500' : 'text-zinc-500'}`}
@@ -1769,7 +1905,7 @@ export default function App() {
                 <Users className="w-3 h-3" />
                 Anonymous Session
               </div>
-              {currentRoom.memberRoles?.[user?.uid || ''] === 'creator' && (
+              {currentRoom && (currentRoom.memberRoles?.[user?.uid || ''] === 'creator' || currentRoom.memberRoles?.[user?.uid || ''] === 'admin' || userProfile?.role === 'dev') && (
                 <button 
                   onClick={() => setView("admin")}
                   className="p-2 hover:bg-zinc-900 rounded-full transition-colors text-zinc-500 hover:text-white"
@@ -1798,6 +1934,10 @@ export default function App() {
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   key={confession.id}
+                  ref={(el) => {
+                    if (el) messageRefs.current.set(confession.id, el);
+                    else messageRefs.current.delete(confession.id);
+                  }}
                   className={`flex flex-col ${confession.authorUid === user?.uid ? "items-end" : "items-start"}`}
                 >
                   <div className="flex items-center gap-2 mb-1 px-1">
@@ -1818,7 +1958,10 @@ export default function App() {
                       : "bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-tl-none"
                   }`}>
                     {replyContext && (
-                      <div className={`mb-2 p-2 rounded-lg text-xs border-l-2 ${confession.authorUid === user?.uid ? "bg-black/5 border-black/20" : "bg-black/20 border-zinc-700"}`}>
+                      <div 
+                        onClick={(e) => { e.stopPropagation(); scrollToMessage(replyContext.id); }}
+                        className={`mb-2 p-2 rounded-lg text-xs border-l-2 cursor-pointer hover:opacity-80 transition-opacity ${confession.authorUid === user?.uid ? "bg-black/5 border-black/20" : "bg-black/20 border-zinc-700"}`}
+                      >
                         <span className="font-bold opacity-70 block mb-1">{replyContext.codename || replyContext.animalAlias}</span>
                         <span className="opacity-70 line-clamp-1">{replyContext.text || "Attachment"}</span>
                       </div>
@@ -1831,7 +1974,10 @@ export default function App() {
 
                     {/* Action Menu (Reply, React, Report, Delete) */}
                     <div className={`absolute top-2 ${confession.authorUid === user?.uid ? "-left-36" : "-right-36"} opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 bg-zinc-900 border border-zinc-800 rounded-lg p-1 shadow-xl`}>
-                      <button onClick={() => setReplyingTo(confession)} className="p-1.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white" title="Reply">
+                      <button onClick={() => {
+                        setReplyingTo(confession);
+                        chatInputRef.current?.focus();
+                      }} className="p-1.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white" title="Reply">
                         <Reply className="w-4 h-4" />
                       </button>
                       <div className="relative group/react">
@@ -1939,6 +2085,7 @@ export default function App() {
               </button>
               <div className="relative flex-1">
                 <textarea 
+                  ref={chatInputRef}
                   value={newConfession}
                   onChange={(e) => setNewConfession(e.target.value)}
                   placeholder="Share a secret..."

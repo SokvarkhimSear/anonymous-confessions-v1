@@ -32,6 +32,18 @@ interface Confession {
   createdAt: any;
 }
 
+interface ForumPost {
+  id: string;
+  title: string;
+  content: string;
+  authorUid: string;
+  codename: string;
+  userTag: string;
+  upvotedBy: string[];
+  downvotedBy: string[];
+  createdAt: any;
+}
+
 interface UserProfile {
   codename: string;
   photoURL: string;
@@ -43,20 +55,24 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [view, setView] = useState<"landing" | "signin" | "signup" | "onboarding" | "dashboard" | "room">("landing");
+  const [view, setView] = useState<"landing" | "signin" | "signup" | "onboarding" | "dashboard" | "room" | "forum">("landing");
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [rooms, setRooms] = useState<Room[]>([]);
   const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
   const [confessions, setConfessions] = useState<Confession[]>([]);
+  const [forumPosts, setForumPosts] = useState<ForumPost[]>([]);
   const [newConfession, setNewConfession] = useState("");
   const [roomCodeInput, setRoomCodeInput] = useState("");
   const [roomNameInput, setRoomNameInput] = useState("");
   const [newCodename, setNewCodename] = useState("");
+  const [postTitleInput, setPostTitleInput] = useState("");
+  const [postContentInput, setPostContentInput] = useState("");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showCreatePostModal, setShowCreatePostModal] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -133,6 +149,21 @@ export default function App() {
 
     return () => unsubscribe();
   }, [currentRoom, view]);
+
+  // Listen for forum posts
+  useEffect(() => {
+    if (!user || view !== "forum") return;
+
+    const q = query(collection(db, "forum_posts"), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const postsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ForumPost));
+      setForumPosts(postsData);
+    }, (err) => {
+      handleFirestoreError(err, OperationType.LIST, "forum_posts");
+    });
+
+    return () => unsubscribe();
+  }, [user, view]);
 
   const handleEmailSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -328,6 +359,66 @@ export default function App() {
     }
   };
 
+  const createForumPost = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!postTitleInput.trim() || !postContentInput.trim() || !user || !userProfile) return;
+
+    setLoading(true);
+    try {
+      await addDoc(collection(db, "forum_posts"), {
+        title: postTitleInput.trim(),
+        content: postContentInput.trim(),
+        authorUid: user.uid,
+        codename: userProfile.codename,
+        userTag: userProfile.userTag || "",
+        upvotedBy: [],
+        downvotedBy: [],
+        createdAt: serverTimestamp()
+      });
+      setShowCreatePostModal(false);
+      setPostTitleInput("");
+      setPostContentInput("");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, "forum_posts");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVote = async (postId: string, type: 'up' | 'down') => {
+    if (!user) return;
+    const postRef = doc(db, "forum_posts", postId);
+    const post = forumPosts.find(p => p.id === postId);
+    if (!post) return;
+
+    const hasUpvoted = post.upvotedBy.includes(user.uid);
+    const hasDownvoted = post.downvotedBy.includes(user.uid);
+
+    try {
+      if (type === 'up') {
+        if (hasUpvoted) {
+          await updateDoc(postRef, { upvotedBy: post.upvotedBy.filter(id => id !== user.uid) });
+        } else {
+          await updateDoc(postRef, { 
+            upvotedBy: [...post.upvotedBy, user.uid],
+            downvotedBy: post.downvotedBy.filter(id => id !== user.uid)
+          });
+        }
+      } else {
+        if (hasDownvoted) {
+          await updateDoc(postRef, { downvotedBy: post.downvotedBy.filter(id => id !== user.uid) });
+        } else {
+          await updateDoc(postRef, { 
+            downvotedBy: [...post.downvotedBy, user.uid],
+            upvotedBy: post.upvotedBy.filter(id => id !== user.uid)
+          });
+        }
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, "forum_posts");
+    }
+  };
+
   const handleSignOut = () => {
     auth.signOut();
     setView("landing");
@@ -374,6 +465,7 @@ export default function App() {
     if (view === "onboarding") return renderOnboarding();
     if (view === "dashboard") return renderDashboard();
     if (view === "room") return renderRoom();
+    if (view === "forum") return renderForum();
     return null;
   }
 
@@ -722,6 +814,15 @@ export default function App() {
               )}
             </div>
           </form>
+
+          <div className="mt-8 pt-8 border-t border-zinc-800">
+            <button 
+              onClick={() => { setShowProfileModal(false); setView("forum"); }}
+              className="w-full bg-zinc-900 border border-zinc-800 text-white px-6 py-4 rounded-xl font-bold hover:bg-zinc-800 transition-all flex items-center justify-center gap-2"
+            >
+              <MessageSquare className="w-5 h-5" /> Enter Community Forum
+            </button>
+          </div>
         </motion.div>
       </div>
     );
@@ -737,6 +838,12 @@ export default function App() {
               <span className="font-bold tracking-tighter text-xl uppercase">Shadows</span>
             </div>
             <div className="flex items-center gap-4">
+              <button 
+                onClick={() => setView("forum")}
+                className="hidden md:flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-sm font-bold hover:bg-zinc-800 transition-colors"
+              >
+                <MessageSquare className="w-4 h-4" /> Community Forum
+              </button>
               <button 
                 onClick={() => setShowProfileModal(true)}
                 className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-zinc-900 border border-zinc-800 text-xs font-medium text-zinc-400 hover:bg-zinc-800 transition-colors"
@@ -943,6 +1050,138 @@ export default function App() {
         {/* Profile Modal */}
         <AnimatePresence>
           {renderProfileModal()}
+        </AnimatePresence>
+      </div>
+    );
+  }
+
+  function renderForum() {
+    return (
+      <div className="min-h-screen bg-black text-zinc-100 font-sans flex flex-col">
+        <nav className="border-b border-zinc-900 bg-black/50 backdrop-blur-md sticky top-0 z-50">
+          <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <button 
+                onClick={() => setView("dashboard")}
+                className="p-2 hover:bg-zinc-900 rounded-full transition-colors text-zinc-500 hover:text-white"
+              >
+                <ChevronLeft className="w-6 h-6" />
+              </button>
+              <h2 className="font-bold text-lg leading-tight">Community Forum</h2>
+            </div>
+            <button 
+              onClick={() => setShowCreatePostModal(true)}
+              className="bg-white text-black px-4 py-2 rounded-xl font-bold text-sm hover:bg-zinc-200 transition-all flex items-center gap-2"
+            >
+              <Plus className="w-4 h-4" /> New Post
+            </button>
+          </div>
+        </nav>
+
+        <main className="flex-1 overflow-y-auto px-6 py-8">
+          <div className="max-w-3xl mx-auto space-y-6">
+            {forumPosts.length === 0 ? (
+              <div className="text-center py-20 opacity-40">
+                <MessageSquare className="w-16 h-16 mx-auto mb-6 text-zinc-800 animate-pulse" />
+                <p className="text-zinc-500 italic font-serif text-lg">"The forum is quiet... start a discussion."</p>
+              </div>
+            ) : (
+              forumPosts.map(post => (
+                <div key={post.id} className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 flex gap-4">
+                  <div className="flex flex-col items-center gap-2">
+                    <button 
+                      onClick={() => handleVote(post.id, 'up')} 
+                      className={`p-1 rounded hover:bg-zinc-800 transition-colors ${post.upvotedBy.includes(user?.uid || '') ? 'text-green-500' : 'text-zinc-500'}`}
+                    >
+                      <ChevronLeft className="w-6 h-6 rotate-90" />
+                    </button>
+                    <span className="font-bold text-sm">{post.upvotedBy.length - post.downvotedBy.length}</span>
+                    <button 
+                      onClick={() => handleVote(post.id, 'down')} 
+                      className={`p-1 rounded hover:bg-zinc-800 transition-colors ${post.downvotedBy.includes(user?.uid || '') ? 'text-red-500' : 'text-zinc-500'}`}
+                    >
+                      <ChevronLeft className="w-6 h-6 -rotate-90" />
+                    </button>
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-xs font-bold uppercase tracking-widest text-zinc-500">
+                        {post.codename} <span className="font-mono text-zinc-700">{post.userTag}</span>
+                      </span>
+                      <span className="text-xs text-zinc-700">• {post.createdAt?.toDate().toLocaleDateString()}</span>
+                    </div>
+                    <h3 className="text-xl font-bold mb-2">{post.title}</h3>
+                    <p className="text-zinc-400 whitespace-pre-wrap">{post.content}</p>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </main>
+
+        {/* Create Post Modal */}
+        <AnimatePresence>
+          {showCreatePostModal && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setShowCreatePostModal(false)}
+                className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+              />
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                className="relative w-full max-w-2xl bg-zinc-900 border border-zinc-800 p-8 rounded-3xl shadow-2xl"
+              >
+                <h3 className="text-2xl font-bold mb-6">Create a Post</h3>
+                <form onSubmit={createForumPost} className="space-y-6">
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-400 mb-2">Title</label>
+                    <input 
+                      type="text" 
+                      value={postTitleInput}
+                      onChange={(e) => setPostTitleInput(e.target.value)}
+                      placeholder="An interesting title"
+                      required
+                      maxLength={200}
+                      className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-400 mb-2">Content</label>
+                    <textarea 
+                      value={postContentInput}
+                      onChange={(e) => setPostContentInput(e.target.value)}
+                      placeholder="What are your thoughts?"
+                      required
+                      maxLength={5000}
+                      rows={6}
+                      className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all resize-none"
+                    />
+                  </div>
+                  <div className="flex gap-3">
+                    <button 
+                      type="button"
+                      onClick={() => setShowCreatePostModal(false)}
+                      className="flex-1 px-6 py-3 rounded-xl font-bold border border-zinc-800 hover:bg-zinc-800 transition-all"
+                    >
+                      Cancel
+                    </button>
+                    <button 
+                      type="submit"
+                      disabled={loading || !postTitleInput.trim() || !postContentInput.trim()}
+                      className="flex-1 bg-white text-black px-6 py-3 rounded-xl font-bold hover:bg-zinc-200 transition-all disabled:opacity-50"
+                    >
+                      {loading ? "Posting..." : "Post"}
+                    </button>
+                  </div>
+                </form>
+              </motion.div>
+            </div>
+          )}
         </AnimatePresence>
       </div>
     );

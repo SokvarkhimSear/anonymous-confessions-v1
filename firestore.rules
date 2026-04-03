@@ -33,6 +33,18 @@ service cloud.firestore {
     //   - email: string
     //   - userTag: string
     //
+    // Collection: forum_posts
+    // Document ID: {postId}
+    // Fields:
+    //   - title: string
+    //   - content: string
+    //   - authorUid: string
+    //   - codename: string
+    //   - userTag: string
+    //   - upvotedBy: list
+    //   - downvotedBy: list
+    //   - createdAt: timestamp
+    //
     // ===============================================================
 
     // Helper Functions
@@ -63,6 +75,18 @@ service cloud.firestore {
              data.createdAt == request.time;
     }
 
+    function isValidForumPost(data) {
+      return data.keys().hasAll(['title', 'content', 'authorUid', 'codename', 'userTag', 'upvotedBy', 'downvotedBy', 'createdAt']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.content is string && data.content.size() > 0 && data.content.size() <= 5000 &&
+             data.authorUid == request.auth.uid &&
+             data.codename is string && data.codename.size() > 0 && data.codename.size() < 50 &&
+             data.userTag is string && data.userTag.size() > 0 && data.userTag.size() < 20 &&
+             data.upvotedBy is list && data.upvotedBy.size() == 0 &&
+             data.downvotedBy is list && data.downvotedBy.size() == 0 &&
+             data.createdAt == request.time;
+    }
+
     // Rules for users
     match /users/{userId} {
       // Anyone authenticated can read user profiles (needed to check codename uniqueness)
@@ -89,6 +113,17 @@ service cloud.firestore {
         allow create: if isAuthenticated() && isValidConfession(request.resource.data);
         allow update, delete: if false; // Confessions are immutable
       }
+    }
+
+    // Rules for forum posts
+    match /forum_posts/{postId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidForumPost(request.resource.data);
+      allow update: if isAuthenticated() && 
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['upvotedBy', 'downvotedBy']) &&
+                    request.resource.data.upvotedBy is list &&
+                    request.resource.data.downvotedBy is list;
+      allow delete: if isOwner(resource.data.authorUid);
     }
   }
 }

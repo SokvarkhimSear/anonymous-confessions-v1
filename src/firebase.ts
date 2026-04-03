@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, doc, setDoc, getDoc, getDocs, addDoc, onSnapshot, query, orderBy, serverTimestamp, Timestamp, where, limit, getDocFromServer } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, getDoc, getDocs, addDoc, onSnapshot, query, orderBy, serverTimestamp, Timestamp, where, limit, getDocFromServer, arrayUnion, updateDoc } from 'firebase/firestore';
 import { getAuth, signInAnonymously, onAuthStateChanged, User, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 
 // Import the Firebase configuration
@@ -12,7 +12,7 @@ export const db = (firebaseConfig.firestoreDatabaseId && firebaseConfig.firestor
   : getFirestore(app);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
-export { signInWithPopup };
+export { signInWithPopup, arrayUnion, updateDoc };
 
 // Error handling for Firestore operations
 export enum OperationType {

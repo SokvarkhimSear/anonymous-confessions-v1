@@ -6,7 +6,7 @@
 import { motion, AnimatePresence } from "motion/react";
 import { Lock, Users, Ghost, ArrowRight, Shield, Zap, Plus, Hash, MessageSquare, LogOut, Send, ChevronLeft, Copy, Check } from "lucide-react";
 import React, { useState, useEffect, ReactNode, useRef, Component } from "react";
-import { auth, db, signInAnonymously, onAuthStateChanged, collection, doc, setDoc, getDoc, getDocs, addDoc, onSnapshot, query, orderBy, serverTimestamp, Timestamp, where, limit, User, handleFirestoreError, OperationType, googleProvider, signInWithPopup } from "./firebase";
+import { auth, db, signInAnonymously, onAuthStateChanged, collection, doc, setDoc, getDoc, getDocs, addDoc, onSnapshot, query, orderBy, serverTimestamp, Timestamp, where, limit, User, handleFirestoreError, OperationType, googleProvider, signInWithPopup, arrayUnion, updateDoc } from "./firebase";
 
 // Animal list for random aliases
 const ANIMALS = [
@@ -80,8 +80,8 @@ export default function App() {
   useEffect(() => {
     if (!user || view !== "dashboard") return;
 
-    // ONLY fetch rooms where createdBy matches the logged-in user's UID
-    const q = query(collection(db, "rooms"), where("createdBy", "==", user.uid));
+    // Fetch rooms where the user is a member
+    const q = query(collection(db, "rooms"), where("members", "array-contains", user.uid));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const roomsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Room));
       // Sort in memory to avoid needing a composite index in Firestore
@@ -98,10 +98,9 @@ export default function App() {
   useEffect(() => {
     if (!currentRoom || view !== "room") return;
 
-    // ONLY fetch confessions authored by the logged-in user
+    // Fetch all confessions in the room
     const q = query(
-      collection(db, "rooms", currentRoom.id, "confessions"),
-      where("authorUid", "==", user.uid)
+      collection(db, "rooms", currentRoom.id, "confessions")
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const confessionsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Confession));
@@ -129,6 +128,8 @@ export default function App() {
       console.error("Sign in error:", err);
       if (err instanceof Error && err.message.includes('auth/configuration-not-found')) {
         setError("Google Auth is not enabled in the Firebase Console. Please enable it to proceed.");
+      } else if (err instanceof Error && err.message.includes('auth/unauthorized-domain')) {
+        setError("This domain is not authorized. Please add it to Firebase Console > Authentication > Settings > Authorized domains.");
       } else {
         setError("Failed to sign in. Please try again.");
       }
@@ -148,6 +149,7 @@ export default function App() {
         name: roomNameInput.trim(),
         code,
         createdBy: user.uid,
+        members: [user.uid],
         createdAt: serverTimestamp()
       });
       const newRoom = { id: roomRef.id, name: roomNameInput, code, createdBy: user.uid, createdAt: new Date() };
@@ -157,6 +159,36 @@ export default function App() {
       setRoomNameInput("");
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, "rooms");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const joinRoom = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!roomCodeInput.trim() || !user) return;
+
+    setLoading(true);
+    try {
+      const q = query(collection(db, "rooms"), where("code", "==", roomCodeInput.trim()), limit(1));
+      const querySnapshot = await getDocs(q);
+      if (!querySnapshot.empty) {
+        const roomDoc = querySnapshot.docs[0];
+        
+        // Add user to members array
+        await updateDoc(roomDoc.ref, {
+          members: arrayUnion(user.uid)
+        });
+
+        setCurrentRoom({ id: roomDoc.id, ...roomDoc.data() } as Room);
+        setView("room");
+        setShowJoinModal(false);
+        setRoomCodeInput("");
+      } else {
+        setError("Circle not found. Check the code.");
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.LIST, "rooms");
     } finally {
       setLoading(false);
     }
@@ -368,15 +400,21 @@ export default function App() {
         <main className="max-w-7xl mx-auto px-6 py-12">
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-12">
             <div>
-              <h2 className="text-4xl font-bold tracking-tight mb-2">Your Private Spaces</h2>
-              <p className="text-zinc-500">Create a new private journal.</p>
+              <h2 className="text-4xl font-bold tracking-tight mb-2">Your Circles</h2>
+              <p className="text-zinc-500">Join a shared room or create your own.</p>
             </div>
             <div className="flex gap-4 w-full md:w-auto">
+              <button 
+                onClick={() => setShowJoinModal(true)}
+                className="flex-1 md:flex-none bg-zinc-900 border border-zinc-800 px-6 py-3 rounded-xl font-bold hover:bg-zinc-800 transition-all flex items-center justify-center gap-2"
+              >
+                <Hash className="w-4 h-4" /> Join Room
+              </button>
               <button 
                 onClick={() => setShowCreateModal(true)}
                 className="flex-1 md:flex-none bg-white text-black px-6 py-3 rounded-xl font-bold hover:bg-zinc-200 transition-all flex items-center justify-center gap-2"
               >
-                <Plus className="w-4 h-4" /> New Private Space
+                <Plus className="w-4 h-4" /> New Room
               </button>
             </div>
           </div>
@@ -402,11 +440,29 @@ export default function App() {
                 >
                   <div className="flex justify-between items-start mb-4">
                     <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center text-zinc-400 group-hover:text-white transition-colors">
-                      <Lock className="w-5 h-5" />
+                      <Users className="w-5 h-5" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">Code: {room.code}</span>
+                      <button 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigator.clipboard.writeText(room.code);
+                          setCopiedId(room.id);
+                          setTimeout(() => setCopiedId(null), 2000);
+                        }}
+                        className="p-1 hover:bg-zinc-800 rounded-md text-zinc-600 hover:text-white transition-all flex items-center gap-1"
+                      >
+                        {copiedId === room.id ? (
+                          <Check className="w-3 h-3 text-green-500" />
+                        ) : (
+                          <Copy className="w-3 h-3" />
+                        )}
+                      </button>
                     </div>
                   </div>
                   <h3 className="text-lg font-bold mb-1">{room.name}</h3>
-                  <p className="text-sm text-zinc-500">Tap to view your private space</p>
+                  <p className="text-sm text-zinc-500">Tap to enter the shadows</p>
                 </motion.div>
               ))}
             </div>
@@ -465,7 +521,57 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        {/* Join Modal Removed */}
+        {/* Join Modal */}
+        <AnimatePresence>
+          {showJoinModal && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setShowJoinModal(false)}
+                className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+              />
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                className="relative w-full max-w-md bg-zinc-900 border border-zinc-800 p-8 rounded-3xl shadow-2xl"
+              >
+                <h3 className="text-2xl font-bold mb-6">Join a Circle</h3>
+                <form onSubmit={joinRoom} className="space-y-6">
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-400 mb-2">Enter 6-Digit Code</label>
+                    <input 
+                      type="text" 
+                      value={roomCodeInput}
+                      onChange={(e) => setRoomCodeInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="000000"
+                      required
+                      className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-center text-2xl tracking-[0.5em] font-mono focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all"
+                    />
+                  </div>
+                  <div className="flex gap-3">
+                    <button 
+                      type="button"
+                      onClick={() => setShowJoinModal(false)}
+                      className="flex-1 px-6 py-3 rounded-xl font-bold border border-zinc-800 hover:bg-zinc-800 transition-all"
+                    >
+                      Cancel
+                    </button>
+                    <button 
+                      type="submit"
+                      disabled={loading}
+                      className="flex-1 bg-white text-black px-6 py-3 rounded-xl font-bold hover:bg-zinc-200 transition-all disabled:opacity-50"
+                    >
+                      {loading ? "Joining..." : "Join"}
+                    </button>
+                  </div>
+                </form>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
       </div>
     );
   }
@@ -487,13 +593,16 @@ export default function App() {
               <div>
                 <h2 className="font-bold text-lg leading-tight">{currentRoom.name}</h2>
                 <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono">
-                  <span>PRIVATE SPACE</span>
+                  <span>CODE: {currentRoom.code}</span>
+                  <button onClick={copyCode} className="hover:text-white transition-colors">
+                    {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
+                  </button>
                 </div>
               </div>
             </div>
             <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-zinc-900 border border-zinc-800 text-[10px] font-bold text-zinc-400 uppercase tracking-tighter">
-              <Lock className="w-3 h-3" />
-              Private
+              <Users className="w-3 h-3" />
+              Anonymous Session
             </div>
           </div>
         </nav>

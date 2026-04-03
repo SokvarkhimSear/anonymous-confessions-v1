@@ -1,0 +1,68 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: rooms
+    // Document ID: {roomId} (Group Code)
+    // Fields:
+    //   - name: string (required) - The name of the room
+    //   - createdBy: string (required) - The UID of the creator
+    //   - createdAt: timestamp (required) - When the room was created
+    //
+    // Sub-collection: rooms/{roomId}/confessions
+    // Document ID: {confessionId}
+    // Fields:
+    //   - text: string (required, max 1000 chars) - The confession content
+    //   - animalAlias: string (required, max 50 chars) - The random animal name
+    //   - authorUid: string (required) - The UID of the author
+    //   - createdAt: timestamp (required) - When the confession was posted
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidRoom(data) {
+      return data.keys().hasAll(['name', 'createdBy', 'createdAt']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.createdBy == request.auth.uid &&
+             data.createdAt == request.time;
+    }
+
+    function isValidConfession(data) {
+      return data.keys().hasAll(['text', 'animalAlias', 'authorUid', 'createdAt']) &&
+             data.text is string && data.text.size() > 0 && data.text.size() < 1000 &&
+             data.animalAlias is string && data.animalAlias.size() > 0 && data.animalAlias.size() < 50 &&
+             data.authorUid == request.auth.uid &&
+             data.createdAt == request.time;
+    }
+
+    // Rules for rooms
+    match /rooms/{roomId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidRoom(request.resource.data);
+      allow update, delete: if false; // Rooms are immutable for now
+
+      // Rules for confessions sub-collection
+      match /confessions/{confessionId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidConfession(request.resource.data);
+        allow update, delete: if false; // Confessions are immutable
+      }
+    }
+
+    // Rules for users (if needed for profiles, but we use codenames)
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+  }
+}

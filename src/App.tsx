@@ -25,7 +25,9 @@ interface Room {
 interface Confession {
   id: string;
   text: string;
-  animalAlias: string;
+  animalAlias?: string;
+  codename?: string;
+  userTag?: string;
   authorUid: string;
   createdAt: any;
 }
@@ -304,18 +306,16 @@ export default function App() {
 
   const postConfession = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newConfession.trim() || !currentRoom || !user) return;
+    if (!newConfession.trim() || !currentRoom || !user || !userProfile) return;
 
     const text = newConfession.trim();
     setNewConfession("");
-    
-    // Generate a random animal alias for this specific post
-    const animalAlias = `Anonymous ${ANIMALS[Math.floor(Math.random() * ANIMALS.length)]}`;
 
     try {
       await addDoc(collection(db, "rooms", currentRoom.id, "confessions"), {
         text,
-        animalAlias,
+        codename: userProfile.codename,
+        userTag: userProfile.userTag || "",
         authorUid: user.uid,
         createdAt: serverTimestamp()
       });
@@ -993,7 +993,14 @@ export default function App() {
                 >
                   <div className="flex items-center gap-2 mb-1 px-1">
                     <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">
-                      {confession.animalAlias} {confession.authorUid === user?.uid && "(You)"}
+                      {confession.codename ? (
+                        <>
+                          {confession.codename} <span className="font-mono text-zinc-700">{confession.userTag}</span>
+                        </>
+                      ) : (
+                        confession.animalAlias
+                      )}
+                      {confession.authorUid === user?.uid && " (You)"}
                     </span>
                   </div>
                   <div className={`max-w-[85%] p-4 rounded-2xl ${

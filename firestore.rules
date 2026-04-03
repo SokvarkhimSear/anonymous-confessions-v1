@@ -18,7 +18,9 @@ service cloud.firestore {
     // Document ID: {confessionId}
     // Fields:
     //   - text: string (required, max 1000 chars) - The confession content
-    //   - animalAlias: string (required, max 50 chars) - The random animal name
+    //   - codename: string (optional, max 50 chars) - The user's codename
+    //   - userTag: string (optional, max 20 chars) - The user's tag
+    //   - animalAlias: string (optional, max 50 chars) - Legacy random animal name
     //   - authorUid: string (required) - The UID of the author
     //   - createdAt: timestamp (required) - When the confession was posted
     //
@@ -52,9 +54,11 @@ service cloud.firestore {
     }
 
     function isValidConfession(data) {
-      return data.keys().hasAll(['text', 'animalAlias', 'authorUid', 'createdAt']) &&
+      return data.keys().hasAll(['text', 'authorUid', 'createdAt']) &&
              data.text is string && data.text.size() > 0 && data.text.size() < 1000 &&
-             data.animalAlias is string && data.animalAlias.size() > 0 && data.animalAlias.size() < 50 &&
+             (!('animalAlias' in data) || (data.animalAlias is string && data.animalAlias.size() > 0 && data.animalAlias.size() < 50)) &&
+             (!('codename' in data) || (data.codename is string && data.codename.size() > 0 && data.codename.size() < 50)) &&
+             (!('userTag' in data) || (data.userTag is string && data.userTag.size() > 0 && data.userTag.size() < 20)) &&
              data.authorUid == request.auth.uid &&
              data.createdAt == request.time;
     }

@@ -337,10 +337,11 @@ export default function App() {
               <span className="font-bold tracking-tighter text-xl uppercase">Shadows</span>
             </div>
             <button 
-              onClick={() => setView("onboarding")}
-              className="text-sm font-medium hover:text-white transition-colors"
+              onClick={handleSignIn}
+              disabled={loading}
+              className="text-sm font-medium hover:text-white transition-colors disabled:opacity-50"
             >
-              Sign In
+              {loading ? "Connecting..." : "Sign In"}
             </button>
           </div>
         </nav>

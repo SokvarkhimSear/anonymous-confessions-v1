@@ -6,7 +6,7 @@
 import { motion, AnimatePresence } from "motion/react";
 import { Lock, Users, Ghost, ArrowRight, Shield, Zap, Plus, Hash, MessageSquare, LogOut, Send, ChevronLeft, Copy, Check } from "lucide-react";
 import React, { useState, useEffect, ReactNode, useRef, Component } from "react";
-import { auth, db, signInAnonymously, onAuthStateChanged, collection, doc, setDoc, getDoc, getDocs, addDoc, onSnapshot, query, orderBy, serverTimestamp, Timestamp, where, limit, User, handleFirestoreError, OperationType } from "./firebase";
+import { auth, db, signInAnonymously, onAuthStateChanged, collection, doc, setDoc, getDoc, getDocs, addDoc, onSnapshot, query, orderBy, serverTimestamp, Timestamp, where, limit, User, handleFirestoreError, OperationType, googleProvider, signInWithPopup } from "./firebase";
 
 // Animal list for random aliases
 const ANIMALS = [
@@ -32,7 +32,6 @@ interface Confession {
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [codename, setCodename] = useState<string>("");
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [view, setView] = useState<"landing" | "onboarding" | "dashboard" | "room">("landing");
   const [loading, setLoading] = useState(false);
@@ -54,14 +53,16 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       try {
         if (currentUser) {
-          const userDoc = await getDoc(doc(db, "users", currentUser.uid));
-          if (userDoc.exists()) {
-            setCodename(userDoc.data().codename);
-            setView("dashboard");
-          } else {
-            setView("onboarding");
-          }
+          // Ensure user document exists
+          await setDoc(doc(db, "users", currentUser.uid), {
+            name: currentUser.displayName || "Anonymous",
+            email: currentUser.email || "",
+            photoURL: currentUser.photoURL || "",
+            lastLogin: serverTimestamp()
+          }, { merge: true });
+          
           setUser(currentUser);
+          setView("dashboard");
         } else {
           setUser(null);
           setView("landing");
@@ -79,9 +80,12 @@ export default function App() {
   useEffect(() => {
     if (!user || view !== "dashboard") return;
 
-    const q = query(collection(db, "rooms"), orderBy("createdAt", "desc"), limit(20));
+    // ONLY fetch rooms where createdBy matches the logged-in user's UID
+    const q = query(collection(db, "rooms"), where("createdBy", "==", user.uid));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const roomsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Room));
+      // Sort in memory to avoid needing a composite index in Firestore
+      roomsData.sort((a, b) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
       setRooms(roomsData);
     }, (err) => {
       handleFirestoreError(err, OperationType.LIST, "rooms");
@@ -94,12 +98,15 @@ export default function App() {
   useEffect(() => {
     if (!currentRoom || view !== "room") return;
 
+    // ONLY fetch confessions authored by the logged-in user
     const q = query(
       collection(db, "rooms", currentRoom.id, "confessions"),
-      orderBy("createdAt", "asc")
+      where("authorUid", "==", user.uid)
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const confessionsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Confession));
+      // Sort in memory to avoid composite index requirement
+      confessionsData.sort((a, b) => (a.createdAt?.toMillis() || 0) - (b.createdAt?.toMillis() || 0));
       setConfessions(confessionsData);
       // Use requestAnimationFrame for smoother scroll after DOM update
       requestAnimationFrame(() => {
@@ -112,25 +119,18 @@ export default function App() {
     return () => unsubscribe();
   }, [currentRoom, view]);
 
-  const handleSignIn = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!codename.trim()) return;
-    
+  const handleSignIn = async () => {
     setLoading(true);
     try {
-      const result = await signInAnonymously(auth);
-      await setDoc(doc(db, "users", result.user.uid), {
-        codename: codename.trim(),
-        createdAt: serverTimestamp()
-      });
+      const result = await signInWithPopup(auth, googleProvider);
       setUser(result.user);
       setView("dashboard");
     } catch (err) {
       console.error("Sign in error:", err);
       if (err instanceof Error && err.message.includes('auth/configuration-not-found')) {
-        setError("Anonymous Auth is not enabled in the Firebase Console. Please enable it to proceed.");
+        setError("Google Auth is not enabled in the Firebase Console. Please enable it to proceed.");
       } else {
-        setError("Failed to enter shadows. Please check your connection.");
+        setError("Failed to sign in. Please try again.");
       }
     } finally {
       setLoading(false);
@@ -157,30 +157,6 @@ export default function App() {
       setRoomNameInput("");
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, "rooms");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const joinRoom = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!roomCodeInput.trim()) return;
-
-    setLoading(true);
-    try {
-      const q = query(collection(db, "rooms"), where("code", "==", roomCodeInput.trim()), limit(1));
-      const querySnapshot = await getDocs(q);
-      if (!querySnapshot.empty) {
-        const roomDoc = querySnapshot.docs[0];
-        setCurrentRoom({ id: roomDoc.id, ...roomDoc.data() } as Room);
-        setView("room");
-        setShowJoinModal(false);
-        setRoomCodeInput("");
-      } else {
-        setError("Circle not found. Check the code.");
-      }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, "rooms");
     } finally {
       setLoading(false);
     }
@@ -341,33 +317,23 @@ export default function App() {
           className="w-full max-w-md space-y-8 bg-zinc-900/50 p-8 rounded-2xl border border-zinc-800 backdrop-blur-xl"
         >
           <div className="text-center">
-            <Ghost className="w-12 h-12 mx-auto text-zinc-400 mb-4" />
-            <h2 className="text-3xl font-bold tracking-tight">Choose your identity</h2>
-            <p className="text-zinc-500 mt-2">Pick a unique codename to enter the shadows.</p>
+            <Shield className="w-12 h-12 mx-auto text-zinc-400 mb-4" />
+            <h2 className="text-3xl font-bold tracking-tight">Secure Your Space</h2>
+            <p className="text-zinc-500 mt-2">Sign in to access your private journals.</p>
           </div>
           
-          <form className="space-y-6" onSubmit={handleSignIn}>
-            <div>
-              <label className="block text-sm font-medium text-zinc-400 mb-2">Codename</label>
-              <input 
-                type="text" 
-                value={codename}
-                onChange={(e) => setCodename(e.target.value)}
-                placeholder="e.g. ShadowWalker"
-                required
-                className="w-full bg-black border border-zinc-800 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all"
-              />
-            </div>
+          <div className="space-y-6">
             <button 
+              onClick={handleSignIn}
               disabled={loading}
               className="w-full bg-white text-black font-bold py-3 rounded-lg hover:bg-zinc-200 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
             >
-              {loading ? "Entering..." : "Enter Shadows"} <ArrowRight className="w-4 h-4" />
+              {loading ? "Connecting..." : "Sign in with Google"} <ArrowRight className="w-4 h-4" />
             </button>
-          </form>
+          </div>
           
           <div className="text-center text-xs text-zinc-600">
-            By entering, you remain anonymous. Your data is encrypted.
+            Your data is private and securely locked to your account.
           </div>
         </motion.div>
       </div>
@@ -385,8 +351,9 @@ export default function App() {
             </div>
             <div className="flex items-center gap-4">
               <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-zinc-900 border border-zinc-800 text-xs font-medium text-zinc-400">
+                {user?.photoURL && <img src={user.photoURL} alt="Profile" className="w-5 h-5 rounded-full" referrerPolicy="no-referrer" />}
                 <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                {codename}
+                {user?.displayName || "Private User"}
               </div>
               <button 
                 onClick={handleSignOut}
@@ -401,21 +368,15 @@ export default function App() {
         <main className="max-w-7xl mx-auto px-6 py-12">
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-12">
             <div>
-              <h2 className="text-4xl font-bold tracking-tight mb-2">Your Circles</h2>
-              <p className="text-zinc-500">Join a private room or create your own.</p>
+              <h2 className="text-4xl font-bold tracking-tight mb-2">Your Private Spaces</h2>
+              <p className="text-zinc-500">Create a new private journal.</p>
             </div>
             <div className="flex gap-4 w-full md:w-auto">
-              <button 
-                onClick={() => setShowJoinModal(true)}
-                className="flex-1 md:flex-none bg-zinc-900 border border-zinc-800 px-6 py-3 rounded-xl font-bold hover:bg-zinc-800 transition-all flex items-center justify-center gap-2"
-              >
-                <Hash className="w-4 h-4" /> Join Room
-              </button>
               <button 
                 onClick={() => setShowCreateModal(true)}
                 className="flex-1 md:flex-none bg-white text-black px-6 py-3 rounded-xl font-bold hover:bg-zinc-200 transition-all flex items-center justify-center gap-2"
               >
-                <Plus className="w-4 h-4" /> New Room
+                <Plus className="w-4 h-4" /> New Private Space
               </button>
             </div>
           </div>
@@ -441,29 +402,11 @@ export default function App() {
                 >
                   <div className="flex justify-between items-start mb-4">
                     <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center text-zinc-400 group-hover:text-white transition-colors">
-                      <Users className="w-5 h-5" />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">Code: {room.code}</span>
-                      <button 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          navigator.clipboard.writeText(room.code);
-                          setCopiedId(room.id);
-                          setTimeout(() => setCopiedId(null), 2000);
-                        }}
-                        className="p-1 hover:bg-zinc-800 rounded-md text-zinc-600 hover:text-white transition-all flex items-center gap-1"
-                      >
-                        {copiedId === room.id ? (
-                          <Check className="w-3 h-3 text-green-500" />
-                        ) : (
-                          <Copy className="w-3 h-3" />
-                        )}
-                      </button>
+                      <Lock className="w-5 h-5" />
                     </div>
                   </div>
                   <h3 className="text-lg font-bold mb-1">{room.name}</h3>
-                  <p className="text-sm text-zinc-500">Tap to enter the shadows</p>
+                  <p className="text-sm text-zinc-500">Tap to view your private space</p>
                 </motion.div>
               ))}
             </div>
@@ -522,57 +465,7 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        {/* Join Modal */}
-        <AnimatePresence>
-          {showJoinModal && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setShowJoinModal(false)}
-                className="absolute inset-0 bg-black/80 backdrop-blur-sm"
-              />
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                className="relative w-full max-w-md bg-zinc-900 border border-zinc-800 p-8 rounded-3xl shadow-2xl"
-              >
-                <h3 className="text-2xl font-bold mb-6">Join a Circle</h3>
-                <form onSubmit={joinRoom} className="space-y-6">
-                  <div>
-                    <label className="block text-sm font-medium text-zinc-400 mb-2">Enter 6-Digit Code</label>
-                    <input 
-                      type="text" 
-                      value={roomCodeInput}
-                      onChange={(e) => setRoomCodeInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                      placeholder="000000"
-                      required
-                      className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-center text-2xl tracking-[0.5em] font-mono focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all"
-                    />
-                  </div>
-                  <div className="flex gap-3">
-                    <button 
-                      type="button"
-                      onClick={() => setShowJoinModal(false)}
-                      className="flex-1 px-6 py-3 rounded-xl font-bold border border-zinc-800 hover:bg-zinc-800 transition-all"
-                    >
-                      Cancel
-                    </button>
-                    <button 
-                      type="submit"
-                      disabled={loading}
-                      className="flex-1 bg-white text-black px-6 py-3 rounded-xl font-bold hover:bg-zinc-200 transition-all disabled:opacity-50"
-                    >
-                      {loading ? "Joining..." : "Join"}
-                    </button>
-                  </div>
-                </form>
-              </motion.div>
-            </div>
-          )}
-        </AnimatePresence>
+        {/* Join Modal Removed */}
       </div>
     );
   }
@@ -594,16 +487,13 @@ export default function App() {
               <div>
                 <h2 className="font-bold text-lg leading-tight">{currentRoom.name}</h2>
                 <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono">
-                  <span>CODE: {currentRoom.code}</span>
-                  <button onClick={copyCode} className="hover:text-white transition-colors">
-                    {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
-                  </button>
+                  <span>PRIVATE SPACE</span>
                 </div>
               </div>
             </div>
             <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-zinc-900 border border-zinc-800 text-[10px] font-bold text-zinc-400 uppercase tracking-tighter">
-              <Users className="w-3 h-3" />
-              Anonymous Session
+              <Lock className="w-3 h-3" />
+              Private
             </div>
           </div>
         </nav>

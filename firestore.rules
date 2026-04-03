@@ -5,10 +5,11 @@ service cloud.firestore {
     // Assumed Data Model
     // ===============================================================
     //
-    // Collection: rooms
-    // Document ID: {roomId} (Group Code)
+    // Collection: rooms (Private Spaces)
+    // Document ID: {roomId}
     // Fields:
     //   - name: string (required) - The name of the room
+    //   - code: string (required) - The room code
     //   - createdBy: string (required) - The UID of the creator
     //   - createdAt: timestamp (required) - When the room was created
     //
@@ -19,6 +20,14 @@ service cloud.firestore {
     //   - animalAlias: string (required, max 50 chars) - The random animal name
     //   - authorUid: string (required) - The UID of the author
     //   - createdAt: timestamp (required) - When the confession was posted
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - name: string
+    //   - email: string
+    //   - photoURL: string
+    //   - lastLogin: timestamp
     //
     // ===============================================================
 
@@ -32,8 +41,9 @@ service cloud.firestore {
     }
 
     function isValidRoom(data) {
-      return data.keys().hasAll(['name', 'createdBy', 'createdAt']) &&
+      return data.keys().hasAll(['name', 'code', 'createdBy', 'createdAt']) &&
              data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.code is string &&
              data.createdBy == request.auth.uid &&
              data.createdAt == request.time;
     }
@@ -46,23 +56,28 @@ service cloud.firestore {
              data.createdAt == request.time;
     }
 
-    // Rules for rooms
+    // Rules for users
+    match /users/{userId} {
+      // Users can only read and write their own profile
+      allow read, write: if isOwner(userId);
+    }
+
+    // Rules for rooms (Private Spaces)
     match /rooms/{roomId} {
-      allow read: if isAuthenticated();
+      // Users can only read rooms they created
+      allow read: if isAuthenticated() && resource.data.createdBy == request.auth.uid;
+      // Users can only create rooms where they are the creator
       allow create: if isAuthenticated() && isValidRoom(request.resource.data);
       allow update, delete: if false; // Rooms are immutable for now
 
       // Rules for confessions sub-collection
       match /confessions/{confessionId} {
-        allow read: if isAuthenticated();
+        // Users can only read confessions they authored
+        allow read: if isAuthenticated() && resource.data.authorUid == request.auth.uid;
+        // Users can only create confessions where they are the author
         allow create: if isAuthenticated() && isValidConfession(request.resource.data);
         allow update, delete: if false; // Confessions are immutable
       }
-    }
-
-    // Rules for users (if needed for profiles, but we use codenames)
-    match /users/{userId} {
-      allow read, write: if isOwner(userId);
     }
   }
 }

@@ -4,9 +4,9 @@
  */
 
 import { motion, AnimatePresence } from "motion/react";
-import { Lock, Users, Ghost, ArrowRight, Shield, Zap, Plus, Hash, MessageSquare, LogOut, Send, ChevronLeft, Copy, Check } from "lucide-react";
+import { Lock, Users, Ghost, ArrowRight, Shield, Zap, Plus, Hash, MessageSquare, LogOut, Send, ChevronLeft, Copy, Check, Paperclip, Image as ImageIcon, X, Reply, ThumbsUp, ThumbsDown, Heart, Smile, Frown, Flag, Trash2, Settings, UserPlus, ShieldAlert } from "lucide-react";
 import React, { useState, useEffect, ReactNode, useRef, Component } from "react";
-import { auth, db, signInAnonymously, onAuthStateChanged, collection, doc, setDoc, getDoc, getDocs, addDoc, onSnapshot, query, orderBy, serverTimestamp, Timestamp, where, limit, User, handleFirestoreError, OperationType, googleProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, arrayUnion, updateDoc } from "./firebase";
+import { auth, db, signInAnonymously, onAuthStateChanged, collection, doc, setDoc, getDoc, getDocs, addDoc, onSnapshot, query, orderBy, serverTimestamp, Timestamp, where, limit, User, handleFirestoreError, OperationType, googleProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, arrayUnion, updateDoc, deleteDoc } from "./firebase";
 
 // Animal list for random aliases
 const ANIMALS = [
@@ -19,6 +19,7 @@ interface Room {
   name: string;
   code: string;
   createdBy: string;
+  memberRoles?: Record<string, 'creator' | 'admin' | 'member'>;
   createdAt: any;
 }
 
@@ -28,7 +29,22 @@ interface Confession {
   animalAlias?: string;
   codename?: string;
   userTag?: string;
+  attachmentUrl?: string;
+  replyTo?: string;
+  reactions?: Record<string, string[]>;
+  isReported?: boolean;
   authorUid: string;
+  createdAt: any;
+}
+
+interface ForumComment {
+  id: string;
+  content: string;
+  authorUid: string;
+  codename: string;
+  userTag: string;
+  attachmentUrl?: string;
+  isReported?: boolean;
   createdAt: any;
 }
 
@@ -39,8 +55,10 @@ interface ForumPost {
   authorUid: string;
   codename: string;
   userTag: string;
+  attachmentUrl?: string;
   upvotedBy: string[];
   downvotedBy: string[];
+  isReported?: boolean;
   createdAt: any;
 }
 
@@ -49,13 +67,14 @@ interface UserProfile {
   photoURL: string;
   codenameUpdatedAt: any;
   userTag?: string;
+  role?: 'dev' | 'moderator' | 'user';
 }
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [view, setView] = useState<"landing" | "signin" | "signup" | "onboarding" | "dashboard" | "room" | "forum">("landing");
+  const [view, setView] = useState<"landing" | "signin" | "signup" | "onboarding" | "dashboard" | "room" | "forum" | "admin">("landing");
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -69,6 +88,13 @@ export default function App() {
   const [newCodename, setNewCodename] = useState("");
   const [postTitleInput, setPostTitleInput] = useState("");
   const [postContentInput, setPostContentInput] = useState("");
+  const [chatAttachment, setChatAttachment] = useState<string | null>(null);
+  const [postAttachment, setPostAttachment] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<Confession | null>(null);
+  const [activePost, setActivePost] = useState<ForumPost | null>(null);
+  const [comments, setComments] = useState<ForumComment[]>([]);
+  const [newComment, setNewComment] = useState("");
+  const [commentAttachment, setCommentAttachment] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
@@ -76,9 +102,13 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reportedItems, setReportedItems] = useState<Set<string>>(new Set());
   
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const chatAttachmentRef = useRef<HTMLInputElement>(null);
+  const postAttachmentRef = useRef<HTMLInputElement>(null);
+  const commentAttachmentRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -164,6 +194,24 @@ export default function App() {
 
     return () => unsubscribe();
   }, [user, view]);
+
+  // Listen for comments on active post
+  useEffect(() => {
+    if (!user || view !== "forum" || !activePost) {
+      setComments([]);
+      return;
+    }
+
+    const q = query(collection(db, "forum_posts", activePost.id, "comments"), orderBy("createdAt", "asc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const commentsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ForumComment));
+      setComments(commentsData);
+    }, (err) => {
+      handleFirestoreError(err, OperationType.LIST, `forum_posts/${activePost.id}/comments`);
+    });
+
+    return () => unsubscribe();
+  }, [user, view, activePost]);
 
   const handleEmailSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -295,9 +343,12 @@ export default function App() {
         code,
         createdBy: user.uid,
         members: [user.uid],
+        memberRoles: {
+          [user.uid]: 'creator'
+        },
         createdAt: serverTimestamp()
       });
-      const newRoom = { id: roomRef.id, name: roomNameInput, code, createdBy: user.uid, createdAt: new Date() };
+      const newRoom = { id: roomRef.id, name: roomNameInput, code, createdBy: user.uid, memberRoles: { [user.uid]: 'creator' as const }, createdAt: new Date() };
       setCurrentRoom(newRoom);
       setView("room");
       setShowCreateModal(false);
@@ -319,13 +370,20 @@ export default function App() {
       const querySnapshot = await getDocs(q);
       if (!querySnapshot.empty) {
         const roomDoc = querySnapshot.docs[0];
+        const roomData = roomDoc.data();
         
-        // Add user to members array
-        await updateDoc(roomDoc.ref, {
+        // Add user to members array and memberRoles if not already present
+        const updates: any = {
           members: arrayUnion(user.uid)
-        });
+        };
+        
+        if (!roomData.memberRoles || !roomData.memberRoles[user.uid]) {
+          updates[`memberRoles.${user.uid}`] = 'member';
+        }
 
-        setCurrentRoom({ id: roomDoc.id, ...roomDoc.data() } as Room);
+        await updateDoc(roomDoc.ref, updates);
+
+        setCurrentRoom({ id: roomDoc.id, ...roomData, memberRoles: { ...roomData.memberRoles, [user.uid]: roomData.memberRoles?.[user.uid] || 'member' } } as Room);
         setView("room");
         setShowJoinModal(false);
         setRoomCodeInput("");
@@ -339,33 +397,155 @@ export default function App() {
     }
   };
 
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, setAttachment: (val: string | null) => void) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    // Max 500KB to stay well under Firestore's 1MB limit when base64 encoded
+    if (file.size > 500 * 1024) {
+      setError("File must be less than 500KB");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setAttachment(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
   const postConfession = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newConfession.trim() || !currentRoom || !user || !userProfile) return;
+    if ((!newConfession.trim() && !chatAttachment) || !currentRoom || !user || !userProfile) return;
 
     const text = newConfession.trim();
+    const attachment = chatAttachment;
+    const replyId = replyingTo?.id;
     setNewConfession("");
+    setChatAttachment(null);
+    setReplyingTo(null);
 
     try {
-      await addDoc(collection(db, "rooms", currentRoom.id, "confessions"), {
+      const payload: any = {
         text,
         codename: userProfile.codename,
         userTag: userProfile.userTag || "",
         authorUid: user.uid,
         createdAt: serverTimestamp()
-      });
+      };
+      if (attachment) payload.attachmentUrl = attachment;
+      if (replyId) payload.replyTo = replyId;
+
+      await addDoc(collection(db, "rooms", currentRoom.id, "confessions"), payload);
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, `rooms/${currentRoom.id}/confessions`);
     }
   };
 
+  const handleReaction = async (confessionId: string, emoji: string) => {
+    if (!user || !currentRoom) return;
+    
+    const confessionRef = doc(db, "rooms", currentRoom.id, "confessions", confessionId);
+    const confession = confessions.find(c => c.id === confessionId);
+    if (!confession) return;
+
+    const currentReactions = confession.reactions || {};
+    const emojiUsers = currentReactions[emoji] || [];
+    
+    let newEmojiUsers;
+    if (emojiUsers.includes(user.uid)) {
+      newEmojiUsers = emojiUsers.filter(uid => uid !== user.uid);
+    } else {
+      newEmojiUsers = [...emojiUsers, user.uid];
+    }
+
+    const newReactions = {
+      ...currentReactions,
+      [emoji]: newEmojiUsers
+    };
+
+    // Clean up empty reaction arrays
+    if (newEmojiUsers.length === 0) {
+      delete newReactions[emoji];
+    }
+
+    try {
+      await updateDoc(confessionRef, {
+        reactions: newReactions
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${currentRoom.id}/confessions`);
+    }
+  };
+
+  const handleReport = async (itemId: string, itemType: 'confession' | 'forum_post' | 'forum_comment', extraData?: any) => {
+    if (!user) return;
+    if (reportedItems.has(itemId)) return;
+
+    try {
+      // Update the item itself to mark it as reported
+      let itemRef;
+      if (itemType === 'confession' && extraData?.roomId) {
+        itemRef = doc(db, "rooms", extraData.roomId, "confessions", itemId);
+      } else if (itemType === 'forum_post') {
+        itemRef = doc(db, "forum_posts", itemId);
+      } else if (itemType === 'forum_comment' && extraData?.postId) {
+        itemRef = doc(db, "forum_posts", extraData.postId, "comments", itemId);
+      }
+
+      if (itemRef) {
+        await updateDoc(itemRef, { isReported: true });
+      }
+
+      await addDoc(collection(db, "reports"), {
+        reportedItemId: itemId,
+        itemType,
+        reportedBy: user.uid,
+        reason: "Inappropriate content / Bad words",
+        createdAt: serverTimestamp(),
+        ...extraData
+      });
+      setReportedItems(prev => new Set(prev).add(itemId));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, "reports");
+    }
+  };
+
+  const handleDeletePost = async (postId: string, type: 'confession' | 'forum_post' | 'forum_comment', extraData?: any) => {
+    if (!user) return;
+    try {
+      if (type === 'confession' && extraData?.roomId) {
+        await deleteDoc(doc(db, "rooms", extraData.roomId, "confessions", postId));
+      } else if (type === 'forum_post') {
+        await deleteDoc(doc(db, "forum_posts", postId));
+        if (activePost?.id === postId) setActivePost(null);
+      } else if (type === 'forum_comment' && extraData?.postId) {
+        await deleteDoc(doc(db, "forum_posts", extraData.postId, "comments", postId));
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `delete_${type}`);
+    }
+  };
+
+  const handleMakeAdmin = async (uid: string) => {
+    if (!currentRoom || !user) return;
+    try {
+      const roomRef = doc(db, "rooms", currentRoom.id);
+      await updateDoc(roomRef, {
+        [`memberRoles.${uid}`]: 'admin'
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, "rooms");
+    }
+  };
+
   const createForumPost = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!postTitleInput.trim() || !postContentInput.trim() || !user || !userProfile) return;
+    if (!postTitleInput.trim() || (!postContentInput.trim() && !postAttachment) || !user || !userProfile) return;
 
     setLoading(true);
     try {
-      await addDoc(collection(db, "forum_posts"), {
+      const payload: any = {
         title: postTitleInput.trim(),
         content: postContentInput.trim(),
         authorUid: user.uid,
@@ -374,14 +554,43 @@ export default function App() {
         upvotedBy: [],
         downvotedBy: [],
         createdAt: serverTimestamp()
-      });
+      };
+      if (postAttachment) payload.attachmentUrl = postAttachment;
+
+      await addDoc(collection(db, "forum_posts"), payload);
       setShowCreatePostModal(false);
       setPostTitleInput("");
       setPostContentInput("");
+      setPostAttachment(null);
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, "forum_posts");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const postComment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if ((!newComment.trim() && !commentAttachment) || !activePost || !user || !userProfile) return;
+
+    const content = newComment.trim();
+    const attachment = commentAttachment;
+    setNewComment("");
+    setCommentAttachment(null);
+
+    try {
+      const payload: any = {
+        content,
+        codename: userProfile.codename,
+        userTag: userProfile.userTag || "",
+        authorUid: user.uid,
+        createdAt: serverTimestamp()
+      };
+      if (attachment) payload.attachmentUrl = attachment;
+
+      await addDoc(collection(db, "forum_posts", activePost.id, "comments"), payload);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `forum_posts/${activePost.id}/comments`);
     }
   };
 
@@ -422,6 +631,18 @@ export default function App() {
   const handleSignOut = () => {
     auth.signOut();
     setView("landing");
+  };
+
+  const handleMakeAdmin = async (memberId: string) => {
+    if (!currentRoom || !user) return;
+    try {
+      const roomRef = doc(db, 'rooms', currentRoom.id);
+      await updateDoc(roomRef, {
+        [`memberRoles.${memberId}`]: 'admin'
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${currentRoom.id}`);
+    }
   };
 
   const copyCode = () => {
@@ -466,7 +687,97 @@ export default function App() {
     if (view === "dashboard") return renderDashboard();
     if (view === "room") return renderRoom();
     if (view === "forum") return renderForum();
+    if (view === "admin") return renderAdmin();
     return null;
+  }
+
+  function renderAdmin() {
+    if (!user || (!currentRoom && userProfile?.role !== 'dev' && userProfile?.role !== 'moderator')) {
+      setView("dashboard");
+      return null;
+    }
+
+    return (
+      <div className="min-h-screen bg-black text-zinc-100 font-sans flex flex-col">
+        <nav className="border-b border-zinc-900 bg-black/50 backdrop-blur-md sticky top-0 z-50">
+          <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <button 
+                onClick={() => setView(currentRoom ? "room" : "dashboard")}
+                className="p-2 hover:bg-zinc-900 rounded-full transition-colors text-zinc-500 hover:text-white"
+              >
+                <ChevronLeft className="w-6 h-6" />
+              </button>
+              <h2 className="font-bold text-lg leading-tight">
+                {currentRoom ? `Manage ${currentRoom.name}` : "Admin Dashboard"}
+              </h2>
+            </div>
+          </div>
+        </nav>
+
+        <main className="flex-1 overflow-y-auto px-6 py-8">
+          <div className="max-w-3xl mx-auto space-y-8">
+            {currentRoom && currentRoom.memberRoles?.[user.uid] === 'creator' && (
+              <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6">
+                <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+                  <Users className="w-5 h-5" /> Member Management
+                </h3>
+                <div className="space-y-4">
+                  {currentRoom.members?.map(memberId => (
+                    <div key={memberId} className="flex items-center justify-between bg-black border border-zinc-800 p-4 rounded-xl">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center">
+                          <Ghost className="w-4 h-4 text-zinc-500" />
+                        </div>
+                        <div>
+                          <p className="font-mono text-sm text-zinc-300">{memberId === user.uid ? "You" : memberId.substring(0, 8) + "..."}</p>
+                          <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold">
+                            {currentRoom.memberRoles?.[memberId] || 'member'}
+                          </p>
+                        </div>
+                      </div>
+                      {memberId !== user.uid && currentRoom.memberRoles?.[memberId] !== 'admin' && (
+                        <button 
+                          onClick={() => handleMakeAdmin(memberId)}
+                          className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
+                        >
+                          <Shield className="w-3 h-3" /> Make Admin
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {(userProfile?.role === 'dev' || userProfile?.role === 'moderator') && !currentRoom && (
+              <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6">
+                <h3 className="text-xl font-bold mb-4 flex items-center gap-2 text-red-500">
+                  <Flag className="w-5 h-5" /> Reported Content
+                </h3>
+                <p className="text-zinc-500 text-sm mb-4">
+                  Reports are logged in the database. As a global admin, you can view the database directly or we can build out a full report viewer here.
+                </p>
+                <div className="bg-black border border-zinc-800 p-4 rounded-xl text-center text-zinc-500 text-sm">
+                  Report viewer UI coming soon. Check Firebase Console for raw reports.
+                </div>
+              </div>
+            )}
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  function renderAttachment(url: string) {
+    if (url.startsWith('data:image/')) {
+      return <img src={url} alt="Attachment" className="max-w-full rounded-lg mt-3 max-h-64 object-contain" />;
+    }
+    return (
+      <a href={url} download="attachment" className="inline-flex items-center gap-2 mt-3 p-3 bg-zinc-800/50 hover:bg-zinc-800 rounded-lg transition-colors text-sm border border-zinc-700">
+        <Paperclip className="w-4 h-4" /> Download Attachment
+      </a>
+    );
   }
 
   function renderLanding() {
@@ -838,6 +1149,14 @@ export default function App() {
               <span className="font-bold tracking-tighter text-xl uppercase">Shadows</span>
             </div>
             <div className="flex items-center gap-4">
+              {(userProfile?.role === 'dev' || userProfile?.role === 'moderator') && (
+                <button 
+                  onClick={() => setView("admin")}
+                  className="hidden md:flex items-center gap-2 px-4 py-2 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-sm font-bold hover:bg-red-500/20 transition-colors"
+                >
+                  <ShieldAlert className="w-4 h-4" /> Admin Dashboard
+                </button>
+              )}
               <button 
                 onClick={() => setView("forum")}
                 className="hidden md:flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-sm font-bold hover:bg-zinc-800 transition-colors"
@@ -1055,7 +1374,179 @@ export default function App() {
     );
   }
 
+  function renderActivePost() {
+    if (!activePost) return null;
+    return (
+      <div className="min-h-screen bg-black text-zinc-100 font-sans flex flex-col">
+        <nav className="border-b border-zinc-900 bg-black/50 backdrop-blur-md sticky top-0 z-50">
+          <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <button 
+                onClick={() => setActivePost(null)}
+                className="p-2 hover:bg-zinc-900 rounded-full transition-colors text-zinc-500 hover:text-white"
+              >
+                <ChevronLeft className="w-6 h-6" />
+              </button>
+              <h2 className="font-bold text-lg leading-tight truncate max-w-[200px] sm:max-w-md">{activePost.title}</h2>
+            </div>
+          </div>
+        </nav>
+
+        <main className="flex-1 overflow-y-auto px-6 py-8">
+          <div className="max-w-3xl mx-auto space-y-8">
+            {/* Original Post */}
+            <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 flex gap-4">
+              <div className="flex flex-col items-center gap-2">
+                <button 
+                  onClick={() => handleVote(activePost.id, 'up')} 
+                  className={`p-1 rounded hover:bg-zinc-800 transition-colors ${activePost.upvotedBy.includes(user?.uid || '') ? 'text-green-500' : 'text-zinc-500'}`}
+                >
+                  <ChevronLeft className="w-6 h-6 rotate-90" />
+                </button>
+                <span className="font-bold text-sm">{activePost.upvotedBy.length - activePost.downvotedBy.length}</span>
+                <button 
+                  onClick={() => handleVote(activePost.id, 'down')} 
+                  className={`p-1 rounded hover:bg-zinc-800 transition-colors ${activePost.downvotedBy.includes(user?.uid || '') ? 'text-red-500' : 'text-zinc-500'}`}
+                >
+                  <ChevronLeft className="w-6 h-6 -rotate-90" />
+                </button>
+              </div>
+              <div className="flex-1 relative group">
+                <div className="absolute top-0 right-0 flex gap-2">
+                  <button 
+                    onClick={() => handleReport(activePost.id, 'forum_post')} 
+                    className={`p-2 rounded transition-colors ${reportedItems.has(activePost.id) ? 'text-red-500 bg-red-500/10' : 'text-zinc-500 hover:text-red-500 hover:bg-zinc-800'}`}
+                    title={reportedItems.has(activePost.id) ? "Reported" : "Report"}
+                    disabled={reportedItems.has(activePost.id)}
+                  >
+                    <Flag className="w-4 h-4" />
+                  </button>
+                  {(userProfile?.role === 'dev' || userProfile?.role === 'moderator' || activePost.authorUid === user?.uid) && (
+                    <button 
+                      onClick={() => handleDeletePost(activePost.id, 'forum_post')} 
+                      className="p-2 rounded transition-colors text-zinc-500 hover:text-red-500 hover:bg-zinc-800"
+                      title="Delete"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 mb-2 pr-16">
+                  <span className="text-xs font-bold uppercase tracking-widest text-zinc-500">
+                    {activePost.codename} <span className="font-mono text-zinc-700">{activePost.userTag}</span>
+                  </span>
+                  <span className="text-xs text-zinc-700">• {activePost.createdAt?.toDate().toLocaleDateString()}</span>
+                </div>
+                <h3 className="text-2xl font-bold mb-4">{activePost.title}</h3>
+                {activePost.content && <p className="text-zinc-300 whitespace-pre-wrap leading-relaxed mb-4">{activePost.content}</p>}
+                {activePost.attachmentUrl && renderAttachment(activePost.attachmentUrl)}
+              </div>
+            </div>
+
+            {/* Comments Section */}
+            <div className="space-y-4 pl-4 sm:pl-12 border-l-2 border-zinc-900">
+              <h4 className="font-bold text-zinc-400 mb-6">{comments.length} Comments</h4>
+              {comments.map(comment => (
+                <div key={comment.id} className="bg-black border border-zinc-800 rounded-xl p-4 relative group">
+                  <div className="absolute top-3 right-3 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button 
+                      onClick={() => handleReport(comment.id, 'forum_comment', { postId: activePost.id })} 
+                      className={`p-1.5 rounded transition-colors ${reportedItems.has(comment.id) ? 'text-red-500 bg-red-500/10 opacity-100' : 'text-zinc-500 hover:text-red-500 hover:bg-zinc-800'}`}
+                      title={reportedItems.has(comment.id) ? "Reported" : "Report"}
+                      disabled={reportedItems.has(comment.id)}
+                    >
+                      <Flag className="w-4 h-4" />
+                    </button>
+                    {(userProfile?.role === 'dev' || userProfile?.role === 'moderator' || comment.authorUid === user?.uid) && (
+                      <button 
+                        onClick={() => handleDeletePost(comment.id, 'forum_comment', { postId: activePost.id })} 
+                        className="p-1.5 rounded transition-colors text-zinc-500 hover:text-red-500 hover:bg-zinc-800"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 mb-2 pr-16">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                      {comment.codename} <span className="font-mono text-zinc-700">{comment.userTag}</span>
+                    </span>
+                    <span className="text-[10px] text-zinc-700">• {comment.createdAt?.toDate().toLocaleDateString()}</span>
+                  </div>
+                  {comment.content && <p className="text-sm text-zinc-300 whitespace-pre-wrap mb-2">{comment.content}</p>}
+                  {comment.attachmentUrl && renderAttachment(comment.attachmentUrl)}
+                </div>
+              ))}
+            </div>
+          </div>
+        </main>
+
+        {/* Comment Input */}
+        <div className="border-t border-zinc-900 bg-black/80 backdrop-blur-xl p-6">
+          <div className="max-w-3xl mx-auto">
+            {commentAttachment && (
+              <div className="mb-4 relative inline-block">
+                {commentAttachment.startsWith('data:image/') ? (
+                  <img src={commentAttachment} alt="Preview" className="h-20 rounded-lg object-cover border border-zinc-800" />
+                ) : (
+                  <div className="h-20 w-20 bg-zinc-900 rounded-lg flex items-center justify-center border border-zinc-800">
+                    <Paperclip className="w-6 h-6 text-zinc-500" />
+                  </div>
+                )}
+                <button 
+                  onClick={() => setCommentAttachment(null)}
+                  className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 hover:bg-red-600 transition-colors"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+            <form onSubmit={postComment} className="relative flex items-end gap-2">
+              <input 
+                type="file" 
+                ref={commentAttachmentRef} 
+                onChange={(e) => handleFileUpload(e, setCommentAttachment)} 
+                className="hidden" 
+              />
+              <button 
+                type="button"
+                onClick={() => commentAttachmentRef.current?.click()}
+                className="p-4 bg-zinc-900 border border-zinc-800 rounded-2xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors h-[56px] flex items-center justify-center"
+              >
+                <ImageIcon className="w-5 h-5" />
+              </button>
+              <div className="relative flex-1">
+                <textarea 
+                  value={newComment}
+                  onChange={(e) => setNewComment(e.target.value)}
+                  placeholder="Add a comment..."
+                  rows={1}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl px-6 py-4 pr-16 focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all resize-none min-h-[56px] max-h-32"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      postComment(e);
+                    }
+                  }}
+                />
+                <button 
+                  type="submit"
+                  disabled={!newComment.trim() && !commentAttachment}
+                  className="absolute right-3 bottom-3 p-2 bg-white text-black rounded-xl hover:bg-zinc-200 transition-all disabled:opacity-20 disabled:cursor-not-allowed"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderForum() {
+    if (activePost) return renderActivePost();
+
     return (
       <div className="min-h-screen bg-black text-zinc-100 font-sans flex flex-col">
         <nav className="border-b border-zinc-900 bg-black/50 backdrop-blur-md sticky top-0 z-50">
@@ -1087,8 +1578,8 @@ export default function App() {
               </div>
             ) : (
               forumPosts.map(post => (
-                <div key={post.id} className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 flex gap-4">
-                  <div className="flex flex-col items-center gap-2">
+                <div key={post.id} className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 flex gap-4 hover:border-zinc-700 transition-colors cursor-pointer" onClick={() => setActivePost(post)}>
+                  <div className="flex flex-col items-center gap-2" onClick={(e) => e.stopPropagation()}>
                     <button 
                       onClick={() => handleVote(post.id, 'up')} 
                       className={`p-1 rounded hover:bg-zinc-800 transition-colors ${post.upvotedBy.includes(user?.uid || '') ? 'text-green-500' : 'text-zinc-500'}`}
@@ -1103,15 +1594,40 @@ export default function App() {
                       <ChevronLeft className="w-6 h-6 -rotate-90" />
                     </button>
                   </div>
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
+                  <div className="flex-1 relative group">
+                    <div className="absolute top-0 right-0 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); handleReport(post.id, 'forum_post'); }} 
+                        className={`p-2 rounded transition-colors ${reportedItems.has(post.id) ? 'text-red-500 bg-red-500/10 opacity-100' : 'text-zinc-500 hover:text-red-500 hover:bg-zinc-800'}`}
+                        title={reportedItems.has(post.id) ? "Reported" : "Report"}
+                        disabled={reportedItems.has(post.id)}
+                      >
+                        <Flag className="w-4 h-4" />
+                      </button>
+                      {(userProfile?.role === 'dev' || userProfile?.role === 'moderator' || post.authorUid === user?.uid) && (
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); handleDeletePost(post.id, 'forum_post'); }} 
+                          className="p-2 rounded transition-colors text-zinc-500 hover:text-red-500 hover:bg-zinc-800"
+                          title="Delete"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 mb-2 pr-16">
                       <span className="text-xs font-bold uppercase tracking-widest text-zinc-500">
                         {post.codename} <span className="font-mono text-zinc-700">{post.userTag}</span>
                       </span>
                       <span className="text-xs text-zinc-700">• {post.createdAt?.toDate().toLocaleDateString()}</span>
                     </div>
                     <h3 className="text-xl font-bold mb-2">{post.title}</h3>
-                    <p className="text-zinc-400 whitespace-pre-wrap">{post.content}</p>
+                    {post.content && <p className="text-zinc-400 whitespace-pre-wrap line-clamp-3">{post.content}</p>}
+                    {post.attachmentUrl && <div className="mt-2 text-xs text-zinc-500 flex items-center gap-1"><Paperclip className="w-3 h-3"/> Attachment included</div>}
+                    <div className="mt-4 flex items-center gap-4 text-zinc-500 text-sm font-bold">
+                      <div className="flex items-center gap-1 hover:text-white transition-colors">
+                        <MessageSquare className="w-4 h-4" /> Reply
+                      </div>
+                    </div>
                   </div>
                 </div>
               ))
@@ -1156,12 +1672,49 @@ export default function App() {
                       value={postContentInput}
                       onChange={(e) => setPostContentInput(e.target.value)}
                       placeholder="What are your thoughts?"
-                      required
+                      required={!postAttachment}
                       maxLength={5000}
                       rows={6}
                       className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all resize-none"
                     />
                   </div>
+                  
+                  {/* Attachment Preview & Input */}
+                  <div>
+                    <input 
+                      type="file" 
+                      ref={postAttachmentRef} 
+                      onChange={(e) => handleFileUpload(e, setPostAttachment)} 
+                      className="hidden" 
+                    />
+                    {postAttachment ? (
+                      <div className="relative inline-block">
+                        {postAttachment.startsWith('data:image/') ? (
+                          <img src={postAttachment} alt="Preview" className="h-24 rounded-lg object-cover border border-zinc-700" />
+                        ) : (
+                          <div className="h-24 w-24 bg-zinc-800 rounded-lg flex items-center justify-center border border-zinc-700">
+                            <Paperclip className="w-8 h-8 text-zinc-500" />
+                          </div>
+                        )}
+                        <button 
+                          type="button"
+                          onClick={() => setPostAttachment(null)}
+                          className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 hover:bg-red-600 transition-colors"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button 
+                        type="button"
+                        onClick={() => postAttachmentRef.current?.click()}
+                        className="flex items-center gap-2 text-sm text-zinc-400 hover:text-white transition-colors"
+                      >
+                        <Paperclip className="w-4 h-4" /> Attach File (Max 500KB)
+                      </button>
+                    )}
+                  </div>
+
                   <div className="flex gap-3">
                     <button 
                       type="button"
@@ -1172,7 +1725,7 @@ export default function App() {
                     </button>
                     <button 
                       type="submit"
-                      disabled={loading || !postTitleInput.trim() || !postContentInput.trim()}
+                      disabled={loading || !postTitleInput.trim() || (!postContentInput.trim() && !postAttachment)}
                       className="flex-1 bg-white text-black px-6 py-3 rounded-xl font-bold hover:bg-zinc-200 transition-all disabled:opacity-50"
                     >
                       {loading ? "Posting..." : "Post"}
@@ -1211,9 +1764,20 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-zinc-900 border border-zinc-800 text-[10px] font-bold text-zinc-400 uppercase tracking-tighter">
-              <Users className="w-3 h-3" />
-              Anonymous Session
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-zinc-900 border border-zinc-800 text-[10px] font-bold text-zinc-400 uppercase tracking-tighter">
+                <Users className="w-3 h-3" />
+                Anonymous Session
+              </div>
+              {currentRoom.memberRoles?.[user?.uid || ''] === 'creator' && (
+                <button 
+                  onClick={() => setView("admin")}
+                  className="p-2 hover:bg-zinc-900 rounded-full transition-colors text-zinc-500 hover:text-white"
+                  title="Manage Group"
+                >
+                  <Settings className="w-5 h-5" />
+                </button>
+              )}
             </div>
           </div>
         </nav>
@@ -1227,7 +1791,9 @@ export default function App() {
                 <p className="text-zinc-500 italic font-serif text-lg">"The shadows are silent... be the first to speak."</p>
               </div>
             ) : (
-              confessions.map(confession => (
+              confessions.map(confession => {
+                const replyContext = confession.replyTo ? confessions.find(c => c.id === confession.replyTo) : null;
+                return (
                 <motion.div 
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -1246,18 +1812,78 @@ export default function App() {
                       {confession.authorUid === user?.uid && " (You)"}
                     </span>
                   </div>
-                  <div className={`max-w-[85%] p-4 rounded-2xl ${
+                  <div className={`max-w-[85%] p-4 rounded-2xl relative group ${
                     confession.authorUid === user?.uid 
                       ? "bg-white text-black rounded-tr-none" 
                       : "bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-tl-none"
                   }`}>
-                    <p className="text-sm leading-relaxed whitespace-pre-wrap">{confession.text}</p>
+                    {replyContext && (
+                      <div className={`mb-2 p-2 rounded-lg text-xs border-l-2 ${confession.authorUid === user?.uid ? "bg-black/5 border-black/20" : "bg-black/20 border-zinc-700"}`}>
+                        <span className="font-bold opacity-70 block mb-1">{replyContext.codename || replyContext.animalAlias}</span>
+                        <span className="opacity-70 line-clamp-1">{replyContext.text || "Attachment"}</span>
+                      </div>
+                    )}
+                    {confession.text && <p className="text-sm leading-relaxed whitespace-pre-wrap">{confession.text}</p>}
+                    {confession.attachmentUrl && renderAttachment(confession.attachmentUrl)}
                     <div className={`text-[9px] mt-2 opacity-40 ${confession.authorUid === user?.uid ? "text-black" : "text-white"}`}>
                       {confession.createdAt ? confession.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "Just now"}
                     </div>
+
+                    {/* Action Menu (Reply, React, Report, Delete) */}
+                    <div className={`absolute top-2 ${confession.authorUid === user?.uid ? "-left-36" : "-right-36"} opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 bg-zinc-900 border border-zinc-800 rounded-lg p-1 shadow-xl`}>
+                      <button onClick={() => setReplyingTo(confession)} className="p-1.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white" title="Reply">
+                        <Reply className="w-4 h-4" />
+                      </button>
+                      <div className="relative group/react">
+                        <button className="p-1.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white" title="React">
+                          <Smile className="w-4 h-4" />
+                        </button>
+                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/react:flex gap-1 bg-zinc-800 p-1.5 rounded-full shadow-xl border border-zinc-700">
+                          {['👍', '👎', '❤️', '😂', '😢'].map(emoji => (
+                            <button key={emoji} onClick={() => handleReaction(confession.id, emoji)} className="hover:scale-125 transition-transform text-lg px-1">
+                              {emoji}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => handleReport(confession.id, 'confession', { roomId: currentRoom.id })} 
+                        className={`p-1.5 rounded transition-colors ${reportedItems.has(confession.id) ? 'text-red-500 bg-red-500/10' : 'text-zinc-400 hover:text-red-500 hover:bg-zinc-800'}`}
+                        title={reportedItems.has(confession.id) ? "Reported" : "Report"}
+                        disabled={reportedItems.has(confession.id)}
+                      >
+                        <Flag className="w-4 h-4" />
+                      </button>
+                      {(userProfile?.role === 'dev' || currentRoom.memberRoles?.[user?.uid || ''] === 'creator' || currentRoom.memberRoles?.[user?.uid || ''] === 'admin' || confession.authorUid === user?.uid) && (
+                        <button 
+                          onClick={() => handleDeletePost(confession.id, 'confession', { roomId: currentRoom.id })} 
+                          className="p-1.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-red-500" title="Delete"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
                   </div>
+
+                  {/* Reactions Display */}
+                  {confession.reactions && Object.keys(confession.reactions).length > 0 && (
+                    <div className={`flex gap-1 mt-1 ${confession.authorUid === user?.uid ? "justify-end" : "justify-start"}`}>
+                      {Object.entries(confession.reactions).map(([emoji, users]) => (
+                        <button 
+                          key={emoji}
+                          onClick={() => handleReaction(confession.id, emoji)}
+                          className={`text-[10px] px-1.5 py-0.5 rounded-full border flex items-center gap-1 ${
+                            users.includes(user?.uid || '') ? "bg-zinc-800 border-zinc-700 text-white" : "bg-black border-zinc-800 text-zinc-400"
+                          }`}
+                        >
+                          <span>{emoji}</span>
+                          <span>{users.length}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </motion.div>
-              ))
+              )})
             )}
             <div ref={chatEndRef} />
           </div>
@@ -1266,27 +1892,73 @@ export default function App() {
         {/* Input Area */}
         <div className="border-t border-zinc-900 bg-black/80 backdrop-blur-xl p-6">
           <div className="max-w-3xl mx-auto">
-            <form onSubmit={postConfession} className="relative">
-              <textarea 
-                value={newConfession}
-                onChange={(e) => setNewConfession(e.target.value)}
-                placeholder="Share a secret..."
-                rows={1}
-                className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl px-6 py-4 pr-16 focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all resize-none min-h-[56px] max-h-32"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    postConfession(e);
-                  }
-                }}
+            {replyingTo && (
+              <div className="mb-4 flex items-center justify-between bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+                <div className="flex items-center gap-3 overflow-hidden">
+                  <Reply className="w-4 h-4 text-zinc-500 shrink-0" />
+                  <div className="text-sm truncate">
+                    <span className="font-bold text-zinc-400 mr-2">Replying to {replyingTo.codename || replyingTo.animalAlias}:</span>
+                    <span className="text-zinc-500">{replyingTo.text || "Attachment"}</span>
+                  </div>
+                </div>
+                <button onClick={() => setReplyingTo(null)} className="p-1 hover:bg-zinc-800 rounded-lg text-zinc-500 hover:text-white transition-colors">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+            {chatAttachment && (
+              <div className="mb-4 relative inline-block">
+                {chatAttachment.startsWith('data:image/') ? (
+                  <img src={chatAttachment} alt="Preview" className="h-20 rounded-lg object-cover border border-zinc-800" />
+                ) : (
+                  <div className="h-20 w-20 bg-zinc-900 rounded-lg flex items-center justify-center border border-zinc-800">
+                    <Paperclip className="w-6 h-6 text-zinc-500" />
+                  </div>
+                )}
+                <button 
+                  onClick={() => setChatAttachment(null)}
+                  className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 hover:bg-red-600 transition-colors"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+            <form onSubmit={postConfession} className="relative flex items-end gap-2">
+              <input 
+                type="file" 
+                ref={chatAttachmentRef} 
+                onChange={(e) => handleFileUpload(e, setChatAttachment)} 
+                className="hidden" 
               />
               <button 
-                type="submit"
-                disabled={!newConfession.trim()}
-                className="absolute right-3 bottom-3 p-2 bg-white text-black rounded-xl hover:bg-zinc-200 transition-all disabled:opacity-20 disabled:cursor-not-allowed"
+                type="button"
+                onClick={() => chatAttachmentRef.current?.click()}
+                className="p-4 bg-zinc-900 border border-zinc-800 rounded-2xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors h-[56px] flex items-center justify-center"
               >
-                <Send className="w-5 h-5" />
+                <ImageIcon className="w-5 h-5" />
               </button>
+              <div className="relative flex-1">
+                <textarea 
+                  value={newConfession}
+                  onChange={(e) => setNewConfession(e.target.value)}
+                  placeholder="Share a secret..."
+                  rows={1}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl px-6 py-4 pr-16 focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all resize-none min-h-[56px] max-h-32"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      postConfession(e);
+                    }
+                  }}
+                />
+                <button 
+                  type="submit"
+                  disabled={!newConfession.trim() && !chatAttachment}
+                  className="absolute right-3 bottom-3 p-2 bg-white text-black rounded-xl hover:bg-zinc-200 transition-all disabled:opacity-20 disabled:cursor-not-allowed"
+                >
+                  <Send className="w-5 h-5" />
+                </button>
+              </div>
             </form>
             <p className="text-[10px] text-zinc-600 mt-3 text-center">
               Your identity is hidden behind a random alias for every post.

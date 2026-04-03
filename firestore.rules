@@ -21,6 +21,9 @@ service cloud.firestore {
     //   - codename: string (optional, max 50 chars) - The user's codename
     //   - userTag: string (optional, max 20 chars) - The user's tag
     //   - animalAlias: string (optional, max 50 chars) - Legacy random animal name
+    //   - attachmentUrl: string (optional, max 800000 chars) - Base64 encoded file
+    //   - replyTo: string (optional) - ID of the confession being replied to
+    //   - reactions: map (optional) - Map of emoji to list of UIDs
     //   - authorUid: string (required) - The UID of the author
     //   - createdAt: timestamp (required) - When the confession was posted
     //
@@ -41,8 +44,19 @@ service cloud.firestore {
     //   - authorUid: string
     //   - codename: string
     //   - userTag: string
+    //   - attachmentUrl: string (optional, max 800000 chars) - Base64 encoded file
     //   - upvotedBy: list
     //   - downvotedBy: list
+    //   - createdAt: timestamp
+    //
+    // Sub-collection: forum_posts/{postId}/comments
+    // Document ID: {commentId}
+    // Fields:
+    //   - content: string
+    //   - authorUid: string
+    //   - codename: string
+    //   - userTag: string
+    //   - attachmentUrl: string (optional)
     //   - createdAt: timestamp
     //
     // ===============================================================
@@ -67,23 +81,45 @@ service cloud.firestore {
 
     function isValidConfession(data) {
       return data.keys().hasAll(['text', 'authorUid', 'createdAt']) &&
-             data.text is string && data.text.size() > 0 && data.text.size() < 1000 &&
+             data.text is string && data.text.size() <= 1000 &&
+             (data.text.size() > 0 || ('attachmentUrl' in data && data.attachmentUrl.size() > 0)) &&
              (!('animalAlias' in data) || (data.animalAlias is string && data.animalAlias.size() > 0 && data.animalAlias.size() < 50)) &&
              (!('codename' in data) || (data.codename is string && data.codename.size() > 0 && data.codename.size() < 50)) &&
              (!('userTag' in data) || (data.userTag is string && data.userTag.size() > 0 && data.userTag.size() < 20)) &&
+             (!('attachmentUrl' in data) || (data.attachmentUrl is string && data.attachmentUrl.size() < 800000)) &&
+             (!('replyTo' in data) || data.replyTo is string) &&
+             (!('reactions' in data) || data.reactions is map) &&
              data.authorUid == request.auth.uid &&
              data.createdAt == request.time;
+    }
+
+    function isValidConfessionUpdate(newData, oldData) {
+      return newData.diff(oldData).affectedKeys().hasOnly(['reactions']) &&
+             newData.reactions is map;
     }
 
     function isValidForumPost(data) {
       return data.keys().hasAll(['title', 'content', 'authorUid', 'codename', 'userTag', 'upvotedBy', 'downvotedBy', 'createdAt']) &&
              data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
-             data.content is string && data.content.size() > 0 && data.content.size() <= 5000 &&
+             data.content is string && data.content.size() <= 5000 &&
+             (data.content.size() > 0 || ('attachmentUrl' in data && data.attachmentUrl.size() > 0)) &&
+             (!('attachmentUrl' in data) || (data.attachmentUrl is string && data.attachmentUrl.size() < 800000)) &&
              data.authorUid == request.auth.uid &&
              data.codename is string && data.codename.size() > 0 && data.codename.size() < 50 &&
              data.userTag is string && data.userTag.size() > 0 && data.userTag.size() < 20 &&
              data.upvotedBy is list && data.upvotedBy.size() == 0 &&
              data.downvotedBy is list && data.downvotedBy.size() == 0 &&
+             data.createdAt == request.time;
+    }
+
+    function isValidForumComment(data) {
+      return data.keys().hasAll(['content', 'authorUid', 'codename', 'userTag', 'createdAt']) &&
+             data.content is string && data.content.size() <= 5000 &&
+             (data.content.size() > 0 || ('attachmentUrl' in data && data.attachmentUrl.size() > 0)) &&
+             (!('attachmentUrl' in data) || (data.attachmentUrl is string && data.attachmentUrl.size() < 800000)) &&
+             data.authorUid == request.auth.uid &&
+             data.codename is string && data.codename.size() > 0 && data.codename.size() < 50 &&
+             data.userTag is string && data.userTag.size() > 0 && data.userTag.size() < 20 &&
              data.createdAt == request.time;
     }
 
@@ -111,7 +147,8 @@ service cloud.firestore {
         allow read: if isAuthenticated();
         // Users can create confessions
         allow create: if isAuthenticated() && isValidConfession(request.resource.data);
-        allow update, delete: if false; // Confessions are immutable
+        allow update: if isAuthenticated() && isValidConfessionUpdate(request.resource.data, resource.data);
+        allow delete: if false; // Confessions are immutable
       }
     }
 
@@ -124,6 +161,17 @@ service cloud.firestore {
                     request.resource.data.upvotedBy is list &&
                     request.resource.data.downvotedBy is list;
       allow delete: if isOwner(resource.data.authorUid);
+
+      match /comments/{commentId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidForumComment(request.resource.data);
+      }
+    }
+
+    // Rules for reports
+    match /reports/{reportId} {
+      allow create: if isAuthenticated() && request.resource.data.reportedBy == request.auth.uid;
+      allow read, update, delete: if false;
     }
   }
 }

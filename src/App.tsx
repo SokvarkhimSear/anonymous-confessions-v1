@@ -144,7 +144,7 @@ export default function App() {
       if (err.message?.includes('auth/operation-not-allowed') || err.code === 'auth/operation-not-allowed') {
         setError("Email/Password sign-in is not enabled in your Firebase Console. Please enable it in Authentication > Sign-in method.");
       } else if (err.message?.includes('auth/email-already-in-use') || err.code === 'auth/email-already-in-use') {
-        setError("An account already exists with this email. Please sign in instead.");
+        setError("This email already exists in our database. Would you like to sign in instead?");
       } else {
         setError(err.message || "Failed to sign up.");
       }
@@ -162,8 +162,12 @@ export default function App() {
     } catch (err: any) {
       if (err.message?.includes('auth/operation-not-allowed') || err.code === 'auth/operation-not-allowed') {
         setError("Email/Password sign-in is not enabled in your Firebase Console. Please enable it in Authentication > Sign-in method.");
+      } else if (err.code === 'auth/user-not-found') {
+        setError("This email has no affiliated account on the site.");
+      } else if (err.code === 'auth/wrong-password') {
+        setError("Wrong password. Please try again.");
       } else if (err.message?.includes('auth/invalid-credential') || err.code === 'auth/invalid-credential') {
-        setError("Invalid email or password.");
+        setError("Wrong password, or this email has no affiliated account on the site.");
       } else {
         setError(err.message || "Failed to sign in.");
       }

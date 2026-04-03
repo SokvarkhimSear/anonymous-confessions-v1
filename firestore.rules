@@ -29,6 +29,7 @@ service cloud.firestore {
     //   - photoURL: string
     //   - codenameUpdatedAt: timestamp
     //   - email: string
+    //   - userTag: string
     //
     // ===============================================================
 

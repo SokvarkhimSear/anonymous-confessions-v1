@@ -6,7 +6,7 @@
 import { motion, AnimatePresence } from "motion/react";
 import { Lock, Users, Ghost, ArrowRight, Shield, Zap, Plus, Hash, MessageSquare, LogOut, Send, ChevronLeft, Copy, Check } from "lucide-react";
 import React, { useState, useEffect, ReactNode, useRef, Component } from "react";
-import { auth, db, signInAnonymously, onAuthStateChanged, collection, doc, setDoc, getDoc, getDocs, addDoc, onSnapshot, query, orderBy, serverTimestamp, Timestamp, where, limit, User, handleFirestoreError, OperationType, googleProvider, signInWithPopup, arrayUnion, updateDoc } from "./firebase";
+import { auth, db, signInAnonymously, onAuthStateChanged, collection, doc, setDoc, getDoc, getDocs, addDoc, onSnapshot, query, orderBy, serverTimestamp, Timestamp, where, limit, User, handleFirestoreError, OperationType, googleProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, arrayUnion, updateDoc } from "./firebase";
 
 // Animal list for random aliases
 const ANIMALS = [
@@ -34,14 +34,17 @@ interface UserProfile {
   codename: string;
   photoURL: string;
   codenameUpdatedAt: any;
+  userTag?: string;
 }
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [view, setView] = useState<"landing" | "onboarding" | "dashboard" | "room">("landing");
+  const [view, setView] = useState<"landing" | "signin" | "signup" | "onboarding" | "dashboard" | "room">("landing");
   const [loading, setLoading] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [rooms, setRooms] = useState<Room[]>([]);
   const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
   const [confessions, setConfessions] = useState<Confession[]>([]);
@@ -129,6 +132,32 @@ export default function App() {
     return () => unsubscribe();
   }, [currentRoom, view]);
 
+  const handleEmailSignUp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      await createUserWithEmailAndPassword(auth, email, password);
+    } catch (err: any) {
+      setError(err.message || "Failed to sign up.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEmailSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (err: any) {
+      setError(err.message || "Failed to sign in.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSignIn = async () => {
     setLoading(true);
     try {
@@ -164,10 +193,13 @@ export default function App() {
         return;
       }
 
+      const tag = userProfile?.userTag || `#${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+
       await setDoc(doc(db, "users", user.uid), {
         codename: newCodename.trim(),
         photoURL: userProfile?.photoURL || "default-ghost",
-        codenameUpdatedAt: serverTimestamp()
+        codenameUpdatedAt: serverTimestamp(),
+        userTag: tag
       }, { merge: true });
       
       setNewCodename("");
@@ -321,6 +353,8 @@ export default function App() {
 
   function renderView() {
     if (view === "landing") return renderLanding();
+    if (view === "signin") return renderSignIn();
+    if (view === "signup") return renderSignUp();
     if (view === "onboarding") return renderOnboarding();
     if (view === "dashboard") return renderDashboard();
     if (view === "room") return renderRoom();
@@ -337,11 +371,11 @@ export default function App() {
               <span className="font-bold tracking-tighter text-xl uppercase">Shadows</span>
             </div>
             <button 
-              onClick={handleSignIn}
+              onClick={() => setView("signin")}
               disabled={loading}
               className="text-sm font-medium hover:text-white transition-colors disabled:opacity-50"
             >
-              {loading ? "Connecting..." : "Sign In"}
+              Sign In
             </button>
           </div>
         </nav>
@@ -373,11 +407,11 @@ export default function App() {
                 </p>
                 <div className="flex flex-col sm:flex-row gap-4 justify-center md:justify-start">
                   <button 
-                    onClick={handleSignIn}
+                    onClick={() => setView("signup")}
                     disabled={loading}
                     className="bg-white text-black px-8 py-4 rounded-full font-bold text-lg hover:bg-zinc-200 transition-all flex items-center justify-center gap-2 group disabled:opacity-50"
                   >
-                    {loading ? "Connecting..." : "Sign in with Google"} <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                    Get Started <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
                   </button>
                 </div>
               </motion.div>
@@ -402,6 +436,149 @@ export default function App() {
             </div>
           </div>
         </main>
+      </div>
+    );
+  }
+
+  function renderSignIn() {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center p-4 font-sans">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="w-full max-w-md space-y-8 bg-zinc-900/50 p-8 rounded-2xl border border-zinc-800 backdrop-blur-xl"
+        >
+          <div className="text-center">
+            <Ghost className="w-12 h-12 mx-auto text-zinc-400 mb-4" />
+            <h2 className="text-3xl font-bold tracking-tight">Welcome back</h2>
+            <p className="text-zinc-500 mt-2">Sign in to continue to Shadows.</p>
+          </div>
+          
+          <form className="space-y-6" onSubmit={handleEmailSignIn}>
+            <div>
+              <label className="block text-sm font-medium text-zinc-400 mb-2">Email</label>
+              <input 
+                type="email" 
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                required
+                className="w-full bg-black border border-zinc-800 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-zinc-400 mb-2">Password</label>
+              <input 
+                type="password" 
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                required
+                className="w-full bg-black border border-zinc-800 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all"
+              />
+            </div>
+            <button 
+              type="submit"
+              disabled={loading || !email || !password}
+              className="w-full bg-white text-black font-bold py-3 rounded-lg hover:bg-zinc-200 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {loading ? "Signing in..." : "Sign In"} <ArrowRight className="w-4 h-4" />
+            </button>
+          </form>
+
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-zinc-800"></div>
+            </div>
+            <div className="relative flex justify-center text-sm">
+              <span className="px-2 bg-zinc-900 text-zinc-500">Or continue with</span>
+            </div>
+          </div>
+
+          <button 
+            onClick={handleSignIn}
+            disabled={loading}
+            className="w-full bg-zinc-800 text-white font-bold py-3 rounded-lg hover:bg-zinc-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            Google
+          </button>
+          
+          <div className="text-center text-sm text-zinc-500">
+            Don't have an account? <button onClick={() => setView("signup")} className="text-white hover:underline">Sign up</button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  function renderSignUp() {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center p-4 font-sans">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="w-full max-w-md space-y-8 bg-zinc-900/50 p-8 rounded-2xl border border-zinc-800 backdrop-blur-xl"
+        >
+          <div className="text-center">
+            <Ghost className="w-12 h-12 mx-auto text-zinc-400 mb-4" />
+            <h2 className="text-3xl font-bold tracking-tight">Create an account</h2>
+            <p className="text-zinc-500 mt-2">Join Shadows to start sharing.</p>
+          </div>
+          
+          <form className="space-y-6" onSubmit={handleEmailSignUp}>
+            <div>
+              <label className="block text-sm font-medium text-zinc-400 mb-2">Email</label>
+              <input 
+                type="email" 
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                required
+                className="w-full bg-black border border-zinc-800 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-zinc-400 mb-2">Password</label>
+              <input 
+                type="password" 
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                required
+                minLength={6}
+                className="w-full bg-black border border-zinc-800 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all"
+              />
+            </div>
+            <button 
+              type="submit"
+              disabled={loading || !email || !password}
+              className="w-full bg-white text-black font-bold py-3 rounded-lg hover:bg-zinc-200 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {loading ? "Signing up..." : "Sign Up"} <ArrowRight className="w-4 h-4" />
+            </button>
+          </form>
+
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-zinc-800"></div>
+            </div>
+            <div className="relative flex justify-center text-sm">
+              <span className="px-2 bg-zinc-900 text-zinc-500">Or continue with</span>
+            </div>
+          </div>
+
+          <button 
+            onClick={handleSignIn}
+            disabled={loading}
+            className="w-full bg-zinc-800 text-white font-bold py-3 rounded-lg hover:bg-zinc-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            Google
+          </button>
+          
+          <div className="text-center text-sm text-zinc-500">
+            Already have an account? <button onClick={() => setView("signin")} className="text-white hover:underline">Sign in</button>
+          </div>
+        </motion.div>
       </div>
     );
   }
@@ -493,6 +670,12 @@ export default function App() {
             </div>
             <input type="file" ref={fileInputRef} onChange={handlePhotoUpload} accept="image/*" className="hidden" />
             <p className="text-xs text-zinc-500 mt-2">Click to change picture (Max 1MB)</p>
+            {userProfile.userTag && (
+              <div className="mt-4 flex items-center gap-2">
+                <span className="text-xl font-bold">{userProfile.codename}</span>
+                <span className="text-lg text-zinc-500 font-mono">{userProfile.userTag}</span>
+              </div>
+            )}
           </div>
 
           <form onSubmit={saveCodename} className="space-y-6">
@@ -550,7 +733,10 @@ export default function App() {
                   </div>
                 )}
                 <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                {userProfile?.codename || "Anonymous"}
+                <div className="flex items-center gap-1">
+                  <span>{userProfile?.codename || "Anonymous"}</span>
+                  {userProfile?.userTag && <span className="text-zinc-600 font-mono">{userProfile.userTag}</span>}
+                </div>
               </button>
               <button 
                 onClick={handleSignOut}

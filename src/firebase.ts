@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getFirestore, collection, doc, setDoc, getDoc, getDocs, addDoc, onSnapshot, query, orderBy, serverTimestamp, Timestamp, where, limit, getDocFromServer, arrayUnion, updateDoc } from 'firebase/firestore';
-import { getAuth, signInAnonymously, onAuthStateChanged, User, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged, User, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
 
 // Import the Firebase configuration
 import firebaseConfig from '../firebase-applet-config.json';
@@ -12,7 +12,7 @@ export const db = (firebaseConfig.firestoreDatabaseId && firebaseConfig.firestor
   : getFirestore(app);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
-export { signInWithPopup, arrayUnion, updateDoc };
+export { signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, arrayUnion, updateDoc };
 
 // Error handling for Firestore operations
 export enum OperationType {

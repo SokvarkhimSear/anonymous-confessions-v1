@@ -25,10 +25,10 @@ service cloud.firestore {
     // Collection: users
     // Document ID: {userId}
     // Fields:
-    //   - name: string
-    //   - email: string
+    //   - codename: string
     //   - photoURL: string
-    //   - lastLogin: timestamp
+    //   - codenameUpdatedAt: timestamp
+    //   - email: string
     //
     // ===============================================================
 
@@ -60,8 +60,10 @@ service cloud.firestore {
 
     // Rules for users
     match /users/{userId} {
-      // Users can only read and write their own profile
-      allow read, write: if isOwner(userId);
+      // Anyone authenticated can read user profiles (needed to check codename uniqueness)
+      allow read: if isAuthenticated();
+      // Users can only write their own profile
+      allow write: if isOwner(userId);
     }
 
     // Rules for rooms (Shared Spaces)

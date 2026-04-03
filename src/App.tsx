@@ -30,8 +30,15 @@ interface Confession {
   createdAt: any;
 }
 
+interface UserProfile {
+  codename: string;
+  photoURL: string;
+  codenameUpdatedAt: any;
+}
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [view, setView] = useState<"landing" | "onboarding" | "dashboard" | "room">("landing");
   const [loading, setLoading] = useState(false);
@@ -41,40 +48,44 @@ export default function App() {
   const [newConfession, setNewConfession] = useState("");
   const [roomCodeInput, setRoomCodeInput] = useState("");
   const [roomNameInput, setRoomNameInput] = useState("");
+  const [newCodename, setNewCodename] = useState("");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      try {
-        if (currentUser) {
-          // Ensure user document exists
-          await setDoc(doc(db, "users", currentUser.uid), {
-            name: currentUser.displayName || "Anonymous",
-            email: currentUser.email || "",
-            photoURL: currentUser.photoURL || "",
-            lastLogin: serverTimestamp()
-          }, { merge: true });
-          
-          setUser(currentUser);
-          setView("dashboard");
-        } else {
-          setUser(null);
-          setView("landing");
-        }
-      } catch (err) {
-        handleFirestoreError(err, OperationType.GET, "users");
-      } finally {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (!currentUser) {
+        setView("landing");
+        setUserProfile(null);
         setIsAuthReady(true);
       }
     });
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const unsub = onSnapshot(doc(db, "users", user.uid), (docSnap) => {
+      if (docSnap.exists() && docSnap.data().codename) {
+        setUserProfile(docSnap.data() as UserProfile);
+        setView(prev => (prev === "landing" || prev === "onboarding") ? "dashboard" : prev);
+      } else {
+        setView("onboarding");
+      }
+      setIsAuthReady(true);
+    }, (err) => {
+      handleFirestoreError(err, OperationType.GET, "users");
+    });
+    return () => unsub();
+  }, [user]);
 
   // Listen for user's rooms
   useEffect(() => {
@@ -121,9 +132,8 @@ export default function App() {
   const handleSignIn = async () => {
     setLoading(true);
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      setUser(result.user);
-      setView("dashboard");
+      await signInWithPopup(auth, googleProvider);
+      // onAuthStateChanged and onSnapshot will handle the rest
     } catch (err) {
       console.error("Sign in error:", err);
       if (err instanceof Error && err.message.includes('auth/configuration-not-found')) {
@@ -136,6 +146,60 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const saveCodename = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCodename.trim() || !user) return;
+    setLoading(true);
+    setError(null);
+    try {
+      // Check uniqueness
+      const q = query(collection(db, "users"), where("codename", "==", newCodename.trim()), limit(1));
+      const querySnapshot = await getDocs(q);
+      
+      if (!querySnapshot.empty && querySnapshot.docs[0].id !== user.uid) {
+        setError("This codename is already taken. Please choose another.");
+        setLoading(false);
+        return;
+      }
+
+      await setDoc(doc(db, "users", user.uid), {
+        codename: newCodename.trim(),
+        photoURL: userProfile?.photoURL || "default-ghost",
+        codenameUpdatedAt: serverTimestamp()
+      }, { merge: true });
+      
+      setNewCodename("");
+      setShowProfileModal(false);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, "users");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+    
+    // Check file size (max 1MB for Firestore document size limits)
+    if (file.size > 1024 * 1024) {
+      setError("Image must be less than 1MB");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      try {
+        await setDoc(doc(db, "users", user.uid), {
+          photoURL: reader.result
+        }, { merge: true });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, "users");
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   const createRoom = async (e: React.FormEvent) => {
@@ -308,10 +372,11 @@ export default function App() {
                 </p>
                 <div className="flex flex-col sm:flex-row gap-4 justify-center md:justify-start">
                   <button 
-                    onClick={() => setView("onboarding")}
-                    className="bg-white text-black px-8 py-4 rounded-full font-bold text-lg hover:bg-zinc-200 transition-all flex items-center justify-center gap-2 group"
+                    onClick={handleSignIn}
+                    disabled={loading}
+                    className="bg-white text-black px-8 py-4 rounded-full font-bold text-lg hover:bg-zinc-200 transition-all flex items-center justify-center gap-2 group disabled:opacity-50"
                   >
-                    Get Started <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                    {loading ? "Connecting..." : "Sign in with Google"} <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
                   </button>
                 </div>
               </motion.div>
@@ -349,24 +414,114 @@ export default function App() {
           className="w-full max-w-md space-y-8 bg-zinc-900/50 p-8 rounded-2xl border border-zinc-800 backdrop-blur-xl"
         >
           <div className="text-center">
-            <Shield className="w-12 h-12 mx-auto text-zinc-400 mb-4" />
-            <h2 className="text-3xl font-bold tracking-tight">Secure Your Space</h2>
-            <p className="text-zinc-500 mt-2">Sign in to access your private journals.</p>
+            <Ghost className="w-12 h-12 mx-auto text-zinc-400 mb-4" />
+            <h2 className="text-3xl font-bold tracking-tight">Choose your identity</h2>
+            <p className="text-zinc-500 mt-2">Pick an anonymous codename. You won't be able to change it for 1 week.</p>
           </div>
           
-          <div className="space-y-6">
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-lg text-sm text-center">
+              {error}
+            </div>
+          )}
+
+          <form className="space-y-6" onSubmit={saveCodename}>
+            <div>
+              <label className="block text-sm font-medium text-zinc-400 mb-2">Codename</label>
+              <input 
+                type="text" 
+                value={newCodename}
+                onChange={(e) => setNewCodename(e.target.value)}
+                placeholder="e.g. ShadowWalker"
+                required
+                maxLength={30}
+                className="w-full bg-black border border-zinc-800 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all"
+              />
+            </div>
             <button 
-              onClick={handleSignIn}
-              disabled={loading}
+              type="submit"
+              disabled={loading || !newCodename.trim()}
               className="w-full bg-white text-black font-bold py-3 rounded-lg hover:bg-zinc-200 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
             >
-              {loading ? "Connecting..." : "Sign in with Google"} <ArrowRight className="w-4 h-4" />
+              {loading ? "Entering..." : "Enter Shadows"} <ArrowRight className="w-4 h-4" />
             </button>
-          </div>
+          </form>
           
           <div className="text-center text-xs text-zinc-600">
-            Your data is private and securely locked to your account.
+            By entering, you remain anonymous. Your data is encrypted.
           </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  function renderProfileModal() {
+    if (!showProfileModal || !userProfile) return null;
+    
+    const canChangeCodename = !userProfile.codenameUpdatedAt || 
+      (new Date().getTime() - userProfile.codenameUpdatedAt.toDate().getTime()) > 7 * 24 * 60 * 60 * 1000;
+
+    const daysLeft = userProfile.codenameUpdatedAt ? 
+      Math.ceil((7 * 24 * 60 * 60 * 1000 - (new Date().getTime() - userProfile.codenameUpdatedAt.toDate().getTime())) / (1000 * 60 * 60 * 24)) : 0;
+
+    return (
+      <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+        <motion.div 
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          onClick={() => setShowProfileModal(false)}
+          className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+        />
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }}
+          className="relative w-full max-w-md bg-zinc-900 border border-zinc-800 p-8 rounded-3xl shadow-2xl"
+        >
+          <h3 className="text-2xl font-bold mb-6">Your Profile</h3>
+          
+          <div className="flex flex-col items-center mb-8">
+            <div className="relative group cursor-pointer" onClick={() => fileInputRef.current?.click()}>
+              {userProfile.photoURL && userProfile.photoURL !== "default-ghost" ? (
+                <img src={userProfile.photoURL} alt="Profile" className="w-24 h-24 rounded-full object-cover border-4 border-zinc-800 group-hover:opacity-50 transition-opacity" referrerPolicy="no-referrer" />
+              ) : (
+                <div className="w-24 h-24 rounded-full bg-zinc-800 border-4 border-zinc-800 flex items-center justify-center group-hover:opacity-50 transition-opacity">
+                  <Ghost className="w-12 h-12 text-zinc-400" />
+                </div>
+              )}
+              <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                <span className="text-xs font-bold bg-black/50 px-2 py-1 rounded">Change</span>
+              </div>
+            </div>
+            <input type="file" ref={fileInputRef} onChange={handlePhotoUpload} accept="image/*" className="hidden" />
+            <p className="text-xs text-zinc-500 mt-2">Click to change picture (Max 1MB)</p>
+          </div>
+
+          <form onSubmit={saveCodename} className="space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-zinc-400 mb-2">Anonymous Codename</label>
+              <input 
+                type="text" 
+                value={newCodename}
+                onChange={(e) => setNewCodename(e.target.value)}
+                placeholder={userProfile.codename}
+                disabled={!canChangeCodename}
+                className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all disabled:opacity-50"
+              />
+              {!canChangeCodename && (
+                <p className="text-xs text-amber-500 mt-2">
+                  You can change your codename again in {daysLeft} day{daysLeft !== 1 ? 's' : ''}.
+                </p>
+              )}
+            </div>
+            <div className="flex gap-3">
+              <button type="button" onClick={() => setShowProfileModal(false)} className="flex-1 px-6 py-3 rounded-xl font-bold border border-zinc-800 hover:bg-zinc-800 transition-all">
+                Close
+              </button>
+              {canChangeCodename && newCodename.trim() && newCodename.trim() !== userProfile.codename && (
+                <button type="submit" disabled={loading} className="flex-1 bg-white text-black px-6 py-3 rounded-xl font-bold hover:bg-zinc-200 transition-all disabled:opacity-50">
+                  {loading ? "Saving..." : "Save Name"}
+                </button>
+              )}
+            </div>
+          </form>
         </motion.div>
       </div>
     );
@@ -382,11 +537,20 @@ export default function App() {
               <span className="font-bold tracking-tighter text-xl uppercase">Shadows</span>
             </div>
             <div className="flex items-center gap-4">
-              <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-zinc-900 border border-zinc-800 text-xs font-medium text-zinc-400">
-                {user?.photoURL && <img src={user.photoURL} alt="Profile" className="w-5 h-5 rounded-full" referrerPolicy="no-referrer" />}
+              <button 
+                onClick={() => setShowProfileModal(true)}
+                className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-zinc-900 border border-zinc-800 text-xs font-medium text-zinc-400 hover:bg-zinc-800 transition-colors"
+              >
+                {userProfile?.photoURL && userProfile.photoURL !== "default-ghost" ? (
+                  <img src={userProfile.photoURL} alt="Profile" className="w-5 h-5 rounded-full object-cover" referrerPolicy="no-referrer" />
+                ) : (
+                  <div className="w-5 h-5 rounded-full bg-zinc-800 flex items-center justify-center">
+                    <Ghost className="w-3 h-3 text-zinc-400" />
+                  </div>
+                )}
                 <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                {user?.displayName || "Private User"}
-              </div>
+                {userProfile?.codename || "Anonymous"}
+              </button>
               <button 
                 onClick={handleSignOut}
                 className="p-2 hover:bg-zinc-900 rounded-full transition-colors text-zinc-500 hover:text-white"
@@ -571,6 +735,11 @@ export default function App() {
               </motion.div>
             </div>
           )}
+        </AnimatePresence>
+
+        {/* Profile Modal */}
+        <AnimatePresence>
+          {renderProfileModal()}
         </AnimatePresence>
       </div>
     );
